@@ -3,7 +3,7 @@ import './globals.css';
 export const metadata = {
   title: 'SMVEC OD Management | IT Department',
   description:
-    'Streamline your event On-Duty management at Sri Manakula Vinayagar Engineering College. Register events, get HOD approval, and track results — all in one platform.',
+    'Streamline your event On-Duty management at Sri Manakula Vinayagar Engineering College. Register events, get advisor approval, and HOD sanction in one unified platform.',
   keywords: [
     'SMVEC',
     'OD Management',

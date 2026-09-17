@@ -24,7 +24,7 @@ export default function Hero() {
         <div className={styles.heroContent}>
           <div className={styles.badge}>
             <span className={styles.badgeDot}></span>
-            IT Department — SMVEC
+            IT Department · SMVEC
           </div>
 
           <h1 className={styles.heroTitle}>
@@ -35,7 +35,7 @@ export default function Hero() {
 
           <p className={styles.heroSubtitle}>
             Register for hackathons, internships, and presentations. 
-            Get instant HOD approval and track your results — all digitally.
+            Get advisor approval and HOD sanction digitally.
           </p>
 
           <div className={styles.heroDept}>
@@ -64,7 +64,7 @@ export default function Hero() {
           </div>
         </div>
 
-        {/* Right Visual — Phone Mockup */}
+        {/* Right Visual: Phone Mockup */}
         <div className={styles.heroVisual}>
           <div className={styles.phoneMockup}>
             <div className={styles.phoneScreen}>

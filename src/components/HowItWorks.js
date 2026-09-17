@@ -7,30 +7,30 @@ const steps = [
   {
     number: 1,
     icon: '📝',
-    title: 'Register & Login',
+    title: 'Student Submits Application',
     description:
-      'Create your student account with your college email. Your department and section are auto-filled.',
+      'Log in with your official @smvec.ac.in email, select solo or team event, and upload your invitation or brochure proof.',
   },
   {
     number: 2,
-    icon: '📋',
-    title: 'Submit Event Details',
+    icon: '👩‍🏫',
+    title: 'Class Advisor Verification',
     description:
-      'Fill in the event form — choose solo or team, select event type, pick the date, and describe the event.',
+      'Your Class Advisor verifies your attendance, checks eligibility, and endorses the OD request.',
   },
   {
     number: 3,
-    icon: '✅',
-    title: 'HOD Reviews & Approves',
+    icon: '👨‍💼',
+    title: 'HOD Final Sanction',
     description:
-      'Your HOD receives the submission, reviews the details, and approves or provides feedback.',
+      'The Head of Department reviews the advisor recommendation and grants official college On-Duty sanction.',
   },
   {
     number: 4,
     icon: '🏆',
-    title: 'Submit Results',
+    title: 'Record Achievements',
     description:
-      'After your event, upload your project details, photos, and whether you won or participated.',
+      'After the event, upload certificates and awards directly to college archives.',
   },
 ];
 
@@ -44,10 +44,10 @@ export default function HowItWorks() {
           ref={headerRef}
           className={`${styles.header} animateOnScroll ${headerVisible ? 'visible' : ''}`}
         >
-          <div className={styles.subtitle}>🔄 How It Works</div>
+          <div className={styles.subtitle}>🔄 Workflow</div>
           <h2 className={styles.title}>Simple 4-Step Process</h2>
           <p className={styles.description}>
-            From registration to results — the entire workflow is streamlined and digital.
+            From initial submission to final HOD sanction, the entire workflow is digital and transparent.
           </p>
         </div>
 

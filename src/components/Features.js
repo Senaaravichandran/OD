@@ -8,19 +8,19 @@ const features = [
     icon: '📱',
     title: 'Easy Event Registration',
     description:
-      'Submit your event participation details in minutes with our intuitive form — solo or team, any event type.',
+      'Submit your event participation details in minutes with our intuitive form for solo or team entries.',
   },
   {
     icon: '✅',
-    title: 'HOD Approval Workflow',
+    title: 'Advisor & HOD Approval',
     description:
-      'Real-time approval system. Your HOD reviews, approves, or provides feedback on submissions instantly.',
+      'Two-tier digital approval system. Class Advisor endorses attendance, and HOD grants official sanction.',
   },
   {
     icon: '📊',
     title: 'Result Tracking',
     description:
-      'After your event, submit results with project details, photos, and achievement status — all in one place.',
+      'After your event, record achievements, photos, and certificates in one centralized place.',
   },
   {
     icon: '📥',

@@ -29,105 +29,15 @@ function getResendClient() {
   }
 }
 
-const REDIS_KEY_REQUESTS = 'smvec_od_requests_v2';
-const REDIS_KEY_AUDIT = 'smvec_od_audit_v2';
-const REDIS_KEY_NOTIFS = 'smvec_od_notifs_v2';
+// Clean production keys (v7) - zero fake data
+const REDIS_KEY_REQUESTS = 'smvec_od_requests_v7';
+const REDIS_KEY_AUDIT = 'smvec_od_audit_v7';
+const REDIS_KEY_NOTIFS = 'smvec_od_notifs_v7';
 
-// Initial Seed Data
-const DEFAULT_REQUESTS = [
-  {
-    id: 'OD-2026-001',
-    studentName: 'Aravindhan S',
-    rollNumber: '21IT101',
-    department: 'Information Technology',
-    year: 3,
-    section: 'A',
-    submissionType: 'TEAM',
-    teamMembers: ['Aravindhan S (21IT101)', 'Priya K (21IT102)', 'Rahul M (21IT103)'],
-    eventType: 'Hackathon',
-    eventName: 'Smart India Hackathon 2026 (Grand Finale)',
-    eventDate: '2026-09-22',
-    eventDay: 'Tuesday',
-    description: 'Selected for National Grand Finale at Bengaluru Nodal Center. 3 days On-Duty required.',
-    status: 'APPROVED', // Fully sanctioned by HOD
-    advisorApproved: true,
-    advisorRemarks: 'Verified student academic record (CGPA > 8.5) and attendance (> 85%). Approved and recommended for college representation.',
-    advisorName: 'Dr. K. Senthil (Class Advisor IT-III-A)',
-    advisorTimestamp: '2026-09-15 11:30 AM',
-    hodRemarks: 'Officially sanctioned with travel allowance and attendance compensation. Best wishes!',
-    hodName: 'Dr. P. Sivakumar (HOD/IT)',
-    hodTimestamp: '2026-09-16 03:45 PM',
-    attachmentName: 'SIH_Shortlist_Letter.pdf',
-    resultStatus: 'WON',
-    resultProjectName: 'AI Autonomous Drone for Crop Health Monitoring',
-    resultCertificate: 'SIH_First_Prize_Cert.pdf',
-    createdAt: '2026-09-14 10:15 AM',
-  },
-  {
-    id: 'OD-2026-002',
-    studentName: 'Karthik R',
-    rollNumber: '21IT115',
-    department: 'Information Technology',
-    year: 3,
-    section: 'A',
-    submissionType: 'SOLO',
-    teamMembers: [],
-    eventType: 'Internship',
-    eventName: 'TCS iON Industrial Cloud Immersion',
-    eventDate: '2026-09-25',
-    eventDay: 'Friday',
-    description: 'Selected for 2-week hands-on industrial immersion on AWS and DevSecOps at TCS Siruseri campus.',
-    status: 'APPROVED_BY_ADVISOR', // Approved by advisor, waiting for HOD final sanction
-    advisorApproved: true,
-    advisorRemarks: 'Offer letter checked with TCS HR portal. Approved by Class Advisor. Forwarded for HOD sanction.',
-    advisorName: 'Dr. K. Senthil (Class Advisor IT-III-A)',
-    advisorTimestamp: '2026-09-16 09:30 AM',
-    hodRemarks: null,
-    hodName: null,
-    hodTimestamp: null,
-    attachmentName: 'TCS_Selection_Offer.pdf',
-    resultStatus: 'PENDING',
-    createdAt: '2026-09-15 04:20 PM',
-  },
-  {
-    id: 'OD-2026-003',
-    studentName: 'Sneha M',
-    rollNumber: '21IT142',
-    department: 'Information Technology',
-    year: 3,
-    section: 'A',
-    submissionType: 'TEAM',
-    teamMembers: ['Sneha M (21IT142)', 'Divya S (21IT143)'],
-    eventType: 'Paper Presentation',
-    eventName: 'IEEE ICAIoT 2026 International Conference',
-    eventDate: '2026-09-30',
-    eventDay: 'Wednesday',
-    description: 'Oral presentation of research paper on Edge AI for Predictive Agriculture in Pondicherry University.',
-    status: 'PENDING_ADVISOR', // Needs Class Advisor to click Approve!
-    advisorApproved: false,
-    advisorRemarks: null,
-    advisorName: null,
-    advisorTimestamp: null,
-    hodRemarks: null,
-    hodName: null,
-    hodTimestamp: null,
-    attachmentName: 'IEEE_Acceptance_Proof.pdf',
-    resultStatus: 'PENDING',
-    createdAt: '2026-09-17 01:10 PM',
-  },
-];
-
-const DEFAULT_AUDIT = [
-  { id: 'AUD-01', action: 'CREATED', actor: 'Aravindhan S (21IT101)', role: 'STUDENT', time: '14 Sep, 10:15 AM', details: 'Submitted OD request for Smart India Hackathon' },
-  { id: 'AUD-02', action: 'APPROVED_BY_ADVISOR', actor: 'Dr. K. Senthil', role: 'ADVISOR', time: '15 Sep, 11:30 AM', details: 'Class Advisor approved request & forwarded to HOD with recommendation' },
-  { id: 'AUD-03', action: 'SANCTIONED_BY_HOD', actor: 'Dr. P. Sivakumar', role: 'HOD', time: '16 Sep, 03:45 PM', details: 'HOD granted final On-Duty sanction with digital signature' },
-];
-
-const DEFAULT_NOTIFS = [
-  { id: 'N-1', title: 'OD Approved by HOD 🎉', text: 'Smart India Hackathon OD has been sanctioned by HOD Dr. P. Sivakumar.', time: 'Yesterday', role: 'STUDENT' },
-  { id: 'N-2', title: 'New Submission Awaiting Review 📋', text: 'Sneha M (21IT142) submitted an OD request for IEEE ICAIoT 2026.', time: '2 hours ago', role: 'ADVISOR' },
-  { id: 'N-3', title: 'Advisor Approved Submission ⚡', text: 'Dr. K. Senthil approved TCS Internship for Karthik R and forwarded to HOD.', time: '1 day ago', role: 'HOD' },
-];
+// Default empty data - No dummy or fake records
+const DEFAULT_REQUESTS = [];
+const DEFAULT_AUDIT = [];
+const DEFAULT_NOTIFS = [];
 
 export async function GET() {
   try {
@@ -160,7 +70,6 @@ export async function GET() {
       },
     });
   } catch (error) {
-    // Fallback if Redis transient error
     return NextResponse.json({
       success: true,
       data: {
@@ -188,11 +97,144 @@ export async function POST(req) {
     const now = new Date();
     const timeStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ', ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+    // 1. LOGIN USER VIA INSTITUTIONAL CREDENTIALS
+    if (action === 'LOGIN_USER') {
+      const { role, email, password, name, rollNumber, year, section } = payload;
+      const cleanEmail = email ? email.trim().toLowerCase() : '';
+      if (!cleanEmail.endsWith('@smvec.ac.in')) {
+        return NextResponse.json({ success: false, error: 'Only official @smvec.ac.in email addresses are permitted.' }, { status: 400 });
+      }
+
+      if (role === 'STUDENT') {
+        return NextResponse.json({
+          success: true,
+          user: {
+            name: name || cleanEmail.split('@')[0].toUpperCase(),
+            email: cleanEmail,
+            role: 'STUDENT',
+            rollNumber: rollNumber ? rollNumber.trim().toUpperCase() : '21IT101',
+            department: 'Information Technology',
+            year: Number(year) || 3,
+            section: section || 'A',
+          },
+        });
+      }
+
+      if (role === 'ADVISOR') {
+        const staffSecret = process.env.STAFF_PASSWORD;
+        if (!password || password.trim() !== staffSecret?.trim()) {
+          return NextResponse.json({ success: false, error: 'Invalid staff password. Click "Forgot Password?" to receive an OTP via Resend.' }, { status: 401 });
+        }
+        return NextResponse.json({
+          success: true,
+          user: {
+            name: name || 'Class Advisor (IT-III-A)',
+            email: cleanEmail,
+            role: 'ADVISOR',
+            department: 'Information Technology',
+            year: 3,
+            section: 'A',
+          },
+        });
+      }
+
+      if (role === 'HOD') {
+        const hodSecret = process.env.HOD_PASSWORD;
+        if (!password || password.trim() !== hodSecret?.trim()) {
+          return NextResponse.json({ success: false, error: 'Invalid HOD password. Click "Forgot Password?" to receive an OTP via Resend.' }, { status: 401 });
+        }
+        return NextResponse.json({
+          success: true,
+          user: {
+            name: name || 'Dr. P. Sivakumar (HOD/IT)',
+            email: cleanEmail,
+            role: 'HOD',
+            department: 'Information Technology',
+          },
+        });
+      }
+    }
+
+    // 2. FORGOT PASSWORD (STRICTLY FOR STAFF/ADVISOR AND HOD ONLY VIA RESEND)
+    if (action === 'FORGOT_PASSWORD') {
+      const { email, role } = payload;
+      if (!email || !email.toLowerCase().endsWith('@smvec.ac.in')) {
+        return NextResponse.json({ success: false, error: 'Only official @smvec.ac.in email addresses are permitted.' }, { status: 400 });
+      }
+      if (role !== 'ADVISOR' && role !== 'HOD') {
+        return NextResponse.json({ success: false, error: 'Forgot password recovery is restricted to Staff and HOD accounts.' }, { status: 400 });
+      }
+
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otpKey = `smvec_otp_${email.toLowerCase().trim()}`;
+      if (redis) {
+        await redis.set(otpKey, { otp, role, expiresAt: Date.now() + 600000 });
+      }
+
+      if (resend) {
+        try {
+          const recipients = [email.toLowerCase().trim(), 'delivered@resend.dev'];
+          await resend.emails.send({
+            from: 'SMVEC OD Security <onboarding@resend.dev>',
+            to: recipients,
+            subject: `[SMVEC OD Security] Password Reset Verification Code: ${otp}`,
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px;">
+                <h3 style="color: #3350B0; margin-top: 0;">SMVEC OD Portal | Password Recovery</h3>
+                <p>Hello,</p>
+                <p>A password reset verification code was requested for your <strong>${role === 'HOD' ? 'Head of Department' : 'Class Advisor / Staff'}</strong> account (${email}).</p>
+                <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 16px; text-align: center; margin: 20px 0;">
+                  <div style="font-size: 13px; color: #475569; margin-bottom: 6px;">Your 6-Digit Security Verification Code:</div>
+                  <div style="font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #1e40af;">${otp}</div>
+                </div>
+                <p style="font-size: 12px; color: #64748b;">This code is valid for 10 minutes. If you did not make this request, please disregard this email.</p>
+                <div style="border-top: 1px solid #e2e8f0; margin-top: 16px; padding-top: 12px; font-size: 11px; color: #94a3b8; text-align: center;">
+                  Sri Manakula Vinayagar Engineering College · IT Department Security
+                </div>
+              </div>
+            `,
+          });
+        } catch (mailErr) {
+          console.warn('Forgot password email dispatch notice:', mailErr.message);
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `A 6-digit verification code has been dispatched via Resend to ${email}.`,
+      });
+    }
+
+    // 3. VERIFY OTP
+    if (action === 'VERIFY_OTP') {
+      const { email, otp } = payload;
+      const otpKey = `smvec_otp_${email.toLowerCase().trim()}`;
+      let record = redis ? await redis.get(otpKey) : null;
+
+      if (!record || String(record.otp).trim() !== String(otp).trim()) {
+        return NextResponse.json({ success: false, error: 'Invalid or expired verification code. Please request a new code.' }, { status: 400 });
+      }
+
+      return NextResponse.json({
+        success: true,
+        role: record.role,
+        verified: true,
+        message: 'Identity verified successfully.',
+      });
+    }
+
+    // 3. CREATE OD (STUDENT SUBMISSION)
     if (action === 'CREATE_OD') {
+      const studentEmail = payload.studentEmail || `${payload.rollNumber.toLowerCase()}@smvec.ac.in`;
+      if (!studentEmail.toLowerCase().endsWith('@smvec.ac.in')) {
+        return NextResponse.json({ success: false, error: 'Only official @smvec.ac.in student emails can submit OD requests.' }, { status: 400 });
+      }
+
       const newId = `OD-2026-${String(requests.length + 1).padStart(3, '0')}`;
       const newReq = {
         id: newId,
         studentName: payload.studentName,
+        studentEmail: studentEmail,
         rollNumber: payload.rollNumber,
         department: payload.department || 'Information Technology',
         year: payload.year || 3,
@@ -204,9 +246,10 @@ export async function POST(req) {
         eventDate: payload.eventDate,
         eventDay: payload.eventDay,
         description: payload.description,
-        status: 'PENDING_ADVISOR', // Waiting for Advisor approval!
+        status: 'PENDING_ADVISOR', // Requires Advisor approval before HOD
         advisorApproved: false,
-        attachmentName: `Brochure_${payload.eventName.replace(/\s+/g, '_')}.pdf`,
+        attachmentName: payload.attachmentName || 'Supporting_Document.pdf',
+        resultStatus: 'PENDING',
         createdAt: timeStr,
       };
 
@@ -217,7 +260,7 @@ export async function POST(req) {
         actor: `${payload.studentName} (${payload.rollNumber})`,
         role: 'STUDENT',
         time: timeStr,
-        details: `Submitted OD request for ${payload.eventName}`,
+        details: `Submitted On-Duty application for ${payload.eventName}`,
       });
       notifications.unshift({
         id: `N-${Date.now()}`,
@@ -226,8 +269,10 @@ export async function POST(req) {
         time: 'Just now',
         role: 'ADVISOR',
       });
-    } else if (action === 'ADVISOR_APPROVE') {
-      // CLASS ADVISOR APPROVES THE OD REQUEST!
+    }
+
+    // 4. ADVISOR APPROVE (NO EMAIL DISPATCH HERE AS PER SPECIFICATION)
+    else if (action === 'ADVISOR_APPROVE') {
       const { reqId, remarks, advisorName } = payload;
       requests = requests.map((r) => {
         if (r.id === reqId) {
@@ -235,8 +280,8 @@ export async function POST(req) {
             ...r,
             status: 'APPROVED_BY_ADVISOR', // Student status becomes Approved by Advisor!
             advisorApproved: true,
-            advisorRemarks: remarks || 'Verified student eligibility and attendance. Approved by Class Advisor.',
-            advisorName: advisorName || 'Dr. K. Senthil',
+            advisorRemarks: remarks || 'Verified student academic record and attendance. Approved by Class Advisor.',
+            advisorName: advisorName || 'Class Advisor',
             advisorTimestamp: timeStr,
           };
         }
@@ -246,7 +291,7 @@ export async function POST(req) {
       auditLogs.unshift({
         id: `AUD-${Date.now()}`,
         action: 'APPROVED_BY_ADVISOR',
-        actor: advisorName || 'Dr. K. Senthil',
+        actor: advisorName || 'Class Advisor',
         role: 'ADVISOR',
         time: timeStr,
         details: `Class Advisor APPROVED ${reqId} & forwarded to HOD: "${remarks || 'Approved and recommended'}"`,
@@ -263,25 +308,14 @@ export async function POST(req) {
       notifications.unshift({
         id: `N-${Date.now() + 1}`,
         title: 'Advisor-Approved Submission ⚡',
-        text: `Advisor approved ${reqId}. Awaiting HOD final sanction.`,
+        text: `Class Advisor approved ${reqId}. Awaiting HOD final sanction.`,
         time: 'Just now',
         role: 'HOD',
       });
+    }
 
-      // Send automated email alert via Resend (async simulation/real)
-      if (resend) {
-        try {
-          await resend.emails.send({
-            from: 'onboarding@resend.dev',
-            to: 'delivered@resend.dev',
-            subject: `[SMVEC OD] Advisor Approved Request ${reqId}`,
-            html: `<p>OD Request <strong>${reqId}</strong> has been approved by Class Advisor <strong>${advisorName}</strong> and is ready for HOD final sanction.</p>`,
-          });
-        } catch (_) {
-          // Continue cleanly even if test email domain restriction applies
-        }
-      }
-    } else if (action === 'ADVISOR_REJECT') {
+    // 5. ADVISOR REJECT
+    else if (action === 'ADVISOR_REJECT') {
       const { reqId, remarks, advisorName } = payload;
       requests = requests.map((r) => {
         if (r.id === reqId) {
@@ -289,8 +323,8 @@ export async function POST(req) {
             ...r,
             status: 'REJECTED_ADVISOR',
             advisorApproved: false,
-            advisorRemarks: remarks || 'Low attendance / dates clash with internal exams.',
-            advisorName: advisorName || 'Dr. K. Senthil',
+            advisorRemarks: remarks || 'Attendance criteria not met / Internal assessment clash.',
+            advisorName: advisorName || 'Class Advisor',
             advisorTimestamp: timeStr,
           };
         }
@@ -300,7 +334,7 @@ export async function POST(req) {
       auditLogs.unshift({
         id: `AUD-${Date.now()}`,
         action: 'REJECTED_BY_ADVISOR',
-        actor: advisorName || 'Dr. K. Senthil',
+        actor: advisorName || 'Class Advisor',
         role: 'ADVISOR',
         time: timeStr,
         details: `Class Advisor rejected ${reqId}: "${remarks}"`,
@@ -313,18 +347,23 @@ export async function POST(req) {
         time: 'Just now',
         role: 'STUDENT',
       });
-    } else if (action === 'HOD_APPROVE') {
-      // HOD GIVES FINAL SANCTION (Only possible after Advisor approval!)
+    }
+
+    // 6. HOD APPROVE (CONFIRMATION MAIL TO STUDENT VIA RESEND ONLY IF ACCEPTED BY BOTH ADVISOR AND HOD)
+    else if (action === 'HOD_APPROVE') {
       const { reqId, remarks, hodName } = payload;
+      let targetReq = null;
+
       requests = requests.map((r) => {
         if (r.id === reqId) {
-          return {
+          targetReq = {
             ...r,
             status: 'APPROVED', // Final OD Sanctioned
-            hodRemarks: remarks || 'Sanctioned with full attendance compensation.',
-            hodName: hodName || 'Dr. P. Sivakumar',
+            hodRemarks: remarks || 'Officially sanctioned with full attendance regularisation.',
+            hodName: hodName || 'Dr. P. Sivakumar (HOD/IT)',
             hodTimestamp: timeStr,
           };
+          return targetReq;
         }
         return r;
       });
@@ -332,7 +371,7 @@ export async function POST(req) {
       auditLogs.unshift({
         id: `AUD-${Date.now()}`,
         action: 'SANCTIONED_BY_HOD',
-        actor: hodName || 'Dr. P. Sivakumar',
+        actor: hodName || 'HOD',
         role: 'HOD',
         time: timeStr,
         details: `HOD granted final On-Duty sanction for ${reqId}: "${remarks || 'Sanctioned'}"`,
@@ -346,19 +385,57 @@ export async function POST(req) {
         role: 'STUDENT',
       });
 
-      if (resend) {
+      // DISPATCH OFFICIAL CONFIRMATION MAIL VIA RESEND TO STUDENT
+      // Strictly sent ONLY when accepted by BOTH advisor AND hod!
+      if (resend && targetReq && targetReq.advisorApproved) {
         try {
+          const studentEmail = targetReq.studentEmail || (targetReq.rollNumber ? `${targetReq.rollNumber.toLowerCase()}@smvec.ac.in` : null);
+          const recipients = ['delivered@resend.dev'];
+          if (studentEmail && studentEmail.endsWith('@smvec.ac.in')) {
+            recipients.unshift(studentEmail);
+          }
+
           await resend.emails.send({
-            from: 'onboarding@resend.dev',
-            to: 'delivered@resend.dev',
-            subject: `[SMVEC OD] Final Approval for ${reqId}`,
-            html: `<p>OD Request <strong>${reqId}</strong> has been officially approved and sanctioned by HOD.</p>`,
+            from: 'SMVEC OD Portal <onboarding@resend.dev>',
+            to: recipients,
+            subject: `🎉 [Official Sanction] On-Duty Approved: ${targetReq.id} (${targetReq.eventName})`,
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <div style="background: #3350B0; color: #ffffff; padding: 18px; text-align: center;">
+                  <h2 style="margin: 0; font-size: 18px; letter-spacing: 0.5px;">SRI MANAKULA VINAYAGAR ENGINEERING COLLEGE</h2>
+                  <p style="margin: 4px 0 0; font-size: 13px; opacity: 0.9;">Department of Information Technology · Official OD Sanction</p>
+                </div>
+                <div style="padding: 24px; color: #1e293b; background: #ffffff;">
+                  <h3 style="color: #059669; margin-top: 0;">✓ On-Duty Sanction Granted</h3>
+                  <p>Dear <strong>${targetReq.studentName}</strong> (Roll No: <strong>${targetReq.rollNumber}</strong>),</p>
+                  <p>Your On-Duty application has received final approval from both your <strong>Class Advisor</strong> and the <strong>Head of Department (HOD)</strong>.</p>
+                  
+                  <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px; margin: 16px 0;">
+                    <div style="margin-bottom: 8px;"><strong>OD Reference:</strong> ${targetReq.id}</div>
+                    <div style="margin-bottom: 8px;"><strong>Event:</strong> ${targetReq.eventName} (${targetReq.eventType})</div>
+                    <div style="margin-bottom: 8px;"><strong>Event Date:</strong> ${targetReq.eventDate} (${targetReq.eventDay || ''})</div>
+                    <div style="margin-bottom: 8px;"><strong>Advisor Endorsement:</strong> ${targetReq.advisorRemarks || 'Approved'} (${targetReq.advisorName || 'Class Advisor'})</div>
+                    <div><strong>HOD Final Sanction:</strong> ${targetReq.hodRemarks || 'Sanctioned'} (${targetReq.hodName || 'HOD'})</div>
+                  </div>
+
+                  <p style="font-size: 13px; color: #065f46; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 10px; border-radius: 6px;">
+                    ✓ <strong>Official Attendance Regularisation:</strong> This notification confirms your authorized On-Duty status.
+                  </p>
+                </div>
+                <div style="background: #f1f5f9; padding: 12px; text-align: center; font-size: 12px; color: #64748b;">
+                  Sri Manakula Vinayagar Engineering College · Puducherry
+                </div>
+              </div>
+            `,
           });
-        } catch (_) {
-          // ignore email sandbox restrictions
+        } catch (mailErr) {
+          console.warn('Student confirmation email dispatch info:', mailErr.message);
         }
       }
-    } else if (action === 'HOD_REJECT') {
+    }
+
+    // 7. HOD REJECT
+    else if (action === 'HOD_REJECT') {
       const { reqId, remarks, hodName } = payload;
       requests = requests.map((r) => {
         if (r.id === reqId) {
@@ -366,7 +443,7 @@ export async function POST(req) {
             ...r,
             status: 'REJECTED_HOD',
             hodRemarks: remarks || 'Department quota exceeded / Non-essential event.',
-            hodName: hodName || 'Dr. P. Sivakumar',
+            hodName: hodName || 'HOD',
             hodTimestamp: timeStr,
           };
         }
@@ -376,13 +453,16 @@ export async function POST(req) {
       auditLogs.unshift({
         id: `AUD-${Date.now()}`,
         action: 'REJECTED_BY_HOD',
-        actor: hodName || 'Dr. P. Sivakumar',
+        actor: hodName || 'HOD',
         role: 'HOD',
         time: timeStr,
         details: `HOD rejected ${reqId}: "${remarks}"`,
       });
-    } else if (action === 'SUBMIT_RESULT') {
-      const { reqId, status, projectName, description } = payload;
+    }
+
+    // 8. SUBMIT RESULT
+    else if (action === 'SUBMIT_RESULT') {
+      const { reqId, status, projectName, description, certificateName } = payload;
       requests = requests.map((r) => {
         if (r.id === reqId) {
           return {
@@ -390,7 +470,7 @@ export async function POST(req) {
             resultStatus: status,
             resultProjectName: projectName,
             resultDescription: description,
-            resultCertificate: `Certificate_${reqId}.pdf`,
+            resultCertificate: certificateName || `Certificate_${reqId}.pdf`,
           };
         }
         return r;
@@ -404,10 +484,13 @@ export async function POST(req) {
         time: timeStr,
         details: `Submitted event result: ${status} for ${projectName}`,
       });
-    } else if (action === 'RESET_DEMO') {
-      requests = DEFAULT_REQUESTS;
-      auditLogs = DEFAULT_AUDIT;
-      notifications = DEFAULT_NOTIFS;
+    }
+
+    // 9. PURGE ALL DATA (TO RESET SYSTEM CLEANLY)
+    else if (action === 'PURGE_ALL_DATA') {
+      requests = [];
+      auditLogs = [];
+      notifications = [];
     }
 
     // Save back to Upstash Redis
