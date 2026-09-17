@@ -1,0 +1,371 @@
+.section {
+  padding: var(--section-padding);
+  background: var(--off-white);
+  position: relative;
+  overflow: hidden;
+}
+
+.section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-light), transparent);
+}
+
+.container {
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: var(--container-padding);
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 64px;
+}
+
+.subtitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--primary-blue);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 16px;
+  padding: 6px 16px;
+  background: var(--light-blue);
+  border-radius: var(--radius-full);
+}
+
+.title {
+  margin-bottom: 16px;
+}
+
+.description {
+  max-width: 550px;
+  margin: 0 auto;
+  font-size: 1.1rem;
+  color: var(--gray-500);
+}
+
+/* Showcase carousel */
+.carousel {
+  display: flex;
+  gap: 32px;
+  justify-content: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.screenCard {
+  flex: 0 0 auto;
+  width: 320px;
+  background: var(--white);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+  transition: all var(--transition-base);
+  border: 1px solid var(--border-light);
+}
+
+.screenCard:hover {
+  transform: translateY(-8px);
+  box-shadow: var(--shadow-xl);
+}
+
+.screenCardHeader {
+  background: linear-gradient(135deg, var(--primary-blue), var(--primary-blue-light));
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.screenDots {
+  display: flex;
+  gap: 6px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.dot:first-child {
+  background: #FF5F57;
+}
+
+.dot:nth-child(2) {
+  background: #FFBD2E;
+}
+
+.dot:nth-child(3) {
+  background: #28CA41;
+}
+
+.screenTitle {
+  color: var(--white);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.screenBody {
+  padding: 24px 20px;
+  min-height: 280px;
+}
+
+/* Student Dashboard Mock */
+.mockDashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mockWelcome {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--dark-text);
+}
+
+.mockWelcomeSub {
+  font-size: 0.72rem;
+  color: var(--gray-400);
+  margin-top: 2px;
+}
+
+.mockStatsRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.mockStat {
+  background: var(--light-blue);
+  padding: 12px 8px;
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.mockStatNum {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--primary-blue);
+}
+
+.mockStatLabel {
+  font-size: 0.6rem;
+  color: var(--gray-500);
+  margin-top: 2px;
+}
+
+.mockList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mockListItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--off-white);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--light-blue);
+}
+
+.mockListTitle {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--dark-text);
+}
+
+.mockListDate {
+  font-size: 0.6rem;
+  color: var(--gray-400);
+}
+
+.mockBadge {
+  font-size: 0.55rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+}
+
+.badgeGreen {
+  background: #DEF7EC;
+  color: #03543F;
+}
+
+.badgeYellow {
+  background: #FEF3C7;
+  color: #92400E;
+}
+
+/* Event Form Mock */
+.mockForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mockFormGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mockLabel {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--gray-600);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mockInput {
+  padding: 10px 12px;
+  background: var(--off-white);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--gray-500);
+}
+
+.mockToggleRow {
+  display: flex;
+  gap: 8px;
+}
+
+.mockToggle {
+  flex: 1;
+  padding: 8px;
+  text-align: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  color: var(--gray-500);
+}
+
+.mockToggleActive {
+  background: var(--primary-blue);
+  color: var(--white);
+  border-color: var(--primary-blue);
+}
+
+.mockSubmitBtn {
+  padding: 10px;
+  background: var(--primary-blue);
+  color: var(--white);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+/* HOD Dashboard Mock */
+.mockHod {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mockFilters {
+  display: flex;
+  gap: 6px;
+}
+
+.mockFilter {
+  padding: 6px 12px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  border-radius: var(--radius-full);
+  background: var(--off-white);
+  border: 1px solid var(--border-light);
+  color: var(--gray-500);
+}
+
+.mockFilterActive {
+  background: var(--primary-blue);
+  color: var(--white);
+  border-color: var(--primary-blue);
+}
+
+.mockTable {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.mockTableHeader {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--light-blue);
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--gray-600);
+  text-transform: uppercase;
+}
+
+.mockTableRow {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 8px;
+  padding: 10px;
+  font-size: 0.65rem;
+  color: var(--gray-600);
+  border-top: 1px solid var(--light-blue);
+}
+
+.mockTableRow:nth-child(even) {
+  background: var(--off-white);
+}
+
+.mockActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.mockActionBtn {
+  flex: 1;
+  padding: 8px;
+  text-align: center;
+  font-size: 0.65rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+}
+
+.mockApproveBtn {
+  background: #DEF7EC;
+  color: #03543F;
+}
+
+.mockExportBtn {
+  background: var(--light-blue);
+  color: var(--primary-blue);
+}
+
+/* Responsive */
+@media (max-width: 968px) {
+  .carousel {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .screenCard {
+    width: 100%;
+    max-width: 360px;
+  }
+}
