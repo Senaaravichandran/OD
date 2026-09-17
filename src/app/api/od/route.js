@@ -88,7 +88,8 @@ export async function POST(req) {
     const redis = getRedisClient();
     const resend = getResendClient();
     const body = await req.json();
-    const { action, payload } = body;
+    const action = body.action;
+    const payload = body.payload || body;
 
     let requests = (redis ? await redis.get(REDIS_KEY_REQUESTS) : null) || DEFAULT_REQUESTS;
     let auditLogs = (redis ? await redis.get(REDIS_KEY_AUDIT) : null) || DEFAULT_AUDIT;
@@ -105,7 +106,9 @@ export async function POST(req) {
         return NextResponse.json({ success: false, error: 'Only official @smvec.ac.in email addresses are permitted.' }, { status: 400 });
       }
 
-      if (role === 'STUDENT') {
+      const roleKey = (role || '').toUpperCase();
+
+      if (roleKey === 'STUDENT') {
         return NextResponse.json({
           success: true,
           user: {
@@ -120,7 +123,7 @@ export async function POST(req) {
         });
       }
 
-      if (role === 'ADVISOR') {
+      if (roleKey === 'ADVISOR' || roleKey === 'STAFF') {
         const staffSecret = process.env.STAFF_PASSWORD;
         if (!password || password.trim() !== staffSecret?.trim()) {
           return NextResponse.json({ success: false, error: 'Invalid staff password. Click "Forgot Password?" to receive an OTP via Resend.' }, { status: 401 });
@@ -138,7 +141,7 @@ export async function POST(req) {
         });
       }
 
-      if (role === 'HOD') {
+      if (roleKey === 'HOD') {
         const hodSecret = process.env.HOD_PASSWORD;
         if (!password || password.trim() !== hodSecret?.trim()) {
           return NextResponse.json({ success: false, error: 'Invalid HOD password. Click "Forgot Password?" to receive an OTP via Resend.' }, { status: 401 });
