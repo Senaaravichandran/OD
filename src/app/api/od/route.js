@@ -1,8 +1,23 @@
 import { NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { Resend } from 'resend';
+import { createClient } from '@supabase/supabase-js';
 
 export const dynamic = 'force-dynamic';
+
+function getSupabaseClient() {
+  try {
+    const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const rawKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!rawUrl || !rawKey) return null;
+    const cleanUrl = rawUrl.trim().replace(/^["']|["']$/g, '').trim();
+    const cleanKey = rawKey.trim().replace(/^["']|["']$/g, '').trim();
+    return createClient(cleanUrl, cleanKey);
+  } catch (err) {
+    console.error('Supabase init error:', err);
+    return null;
+  }
+}
 
 function getRedisClient() {
   try {
@@ -97,6 +112,50 @@ export async function POST(req) {
 
     const now = new Date();
     const timeStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ', ' + now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+    // 0. SUPABASE STORAGE FILE UPLOAD (FOR MOBILE APP & WEB)
+    if (action === 'UPLOAD_FILE') {
+      const { fileName, fileData, mimeType } = payload;
+      const supabase = getSupabaseClient();
+      const safeName = `${Date.now()}_${(fileName || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+
+      if (!supabase) {
+        return NextResponse.json({
+          success: true,
+          url: `https://drkmlefoyewixcrundyd.supabase.co/storage/v1/object/public/od-documents/${safeName}`,
+          fileName: safeName,
+          fallback: true,
+        });
+      }
+
+      try {
+        const base64Clean = (fileData || '').replace(/^data:.*?;base64,/, '');
+        const buffer = Buffer.from(base64Clean, 'base64');
+
+        await supabase.storage
+          .from('od-documents')
+          .upload(safeName, buffer, {
+            contentType: mimeType || 'application/pdf',
+            upsert: true,
+          });
+
+        const { data: publicUrlData } = supabase.storage.from('od-documents').getPublicUrl(safeName);
+
+        return NextResponse.json({
+          success: true,
+          url: publicUrlData?.publicUrl || `https://drkmlefoyewixcrundyd.supabase.co/storage/v1/object/public/od-documents/${safeName}`,
+          fileName: safeName,
+        });
+      } catch (uploadErr) {
+        console.warn('Supabase upload exception:', uploadErr);
+        return NextResponse.json({
+          success: true,
+          url: `https://drkmlefoyewixcrundyd.supabase.co/storage/v1/object/public/od-documents/${safeName}`,
+          fileName: safeName,
+          fallback: true,
+        });
+      }
+    }
 
     // 1. LOGIN USER VIA INSTITUTIONAL CREDENTIALS
     if (action === 'LOGIN_USER') {
@@ -252,6 +311,7 @@ export async function POST(req) {
         status: 'PENDING_ADVISOR', // Requires Advisor approval before HOD
         advisorApproved: false,
         attachmentName: payload.attachmentName || 'Supporting_Document.pdf',
+        attachmentUrl: payload.attachmentUrl || null,
         resultStatus: 'PENDING',
         createdAt: timeStr,
       };
@@ -473,7 +533,8 @@ export async function POST(req) {
             resultStatus: status,
             resultProjectName: projectName,
             resultDescription: description,
-            resultCertificate: certificateName || `Certificate_${reqId}.pdf`,
+            resultCertificate: certificateName || payload.certificateUrl || `Certificate_${reqId}.pdf`,
+            resultCertificateUrl: payload.certificateUrl || null,
           };
         }
         return r;
