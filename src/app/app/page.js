@@ -555,7 +555,7 @@ export default function AppPortal() {
                   className={styles.formInput}
                   value={authEmail}
                   onChange={(e) => setAuthEmail(e.target.value)}
-                  placeholder={authRoleTab === 'STUDENT' ? 'rollnumber@smvec.ac.in' : authRoleTab === 'ADVISOR' ? 'staff@smvec.ac.in' : 'hod.it@smvec.ac.in'}
+                  
                   required
                 />
               </div>
@@ -571,7 +571,7 @@ export default function AppPortal() {
                         className={styles.formInput}
                         value={authRoll}
                         onChange={(e) => setAuthRoll(e.target.value)}
-                        placeholder="e.g. 21IT101"
+                        
                         required
                       />
                     </div>
@@ -582,7 +582,7 @@ export default function AppPortal() {
                         className={styles.formInput}
                         value={authName}
                         onChange={(e) => setAuthName(e.target.value)}
-                        placeholder="Student Name"
+                        
                         required
                       />
                     </div>
@@ -634,7 +634,7 @@ export default function AppPortal() {
                     className={styles.formInput}
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="Enter staff password"
+                    
                     required
                   />
                 </div>
@@ -664,7 +664,7 @@ export default function AppPortal() {
                     className={styles.formInput}
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="Enter HOD password"
+                    
                     required
                   />
                 </div>
@@ -711,7 +711,7 @@ export default function AppPortal() {
                       className={styles.formInput}
                       value={forgotEmail}
                       onChange={(e) => setForgotEmail(e.target.value)}
-                      placeholder={forgotRole === 'HOD' ? 'hod.it@smvec.ac.in' : 'staff@smvec.ac.in'}
+                      
                       required
                     />
                   </div>
@@ -739,7 +739,7 @@ export default function AppPortal() {
                       className={styles.formInput}
                       value={forgotOtp}
                       onChange={(e) => setForgotOtp(e.target.value)}
-                      placeholder="e.g. 849201"
+                      
                       maxLength={6}
                       style={{ letterSpacing: '4px', textAlign: 'center', fontSize: '1.2rem', fontWeight: '800' }}
                       required
@@ -1634,7 +1634,7 @@ export default function AppPortal() {
                   className={styles.formInput}
                   value={formData.eventName}
                   onChange={(e) => setFormData({ ...formData, eventName: e.target.value })}
-                  placeholder="Enter full name of the event / competition"
+                  
                   required
                 />
               </div>
@@ -1659,7 +1659,7 @@ export default function AppPortal() {
                     value={formData.eventDay}
                     readOnly
                     style={{ background: '#f3f4f6', color: '#4b5563' }}
-                    placeholder="Auto-calculated"
+                    
                   />
                 </div>
               </div>
@@ -1672,7 +1672,7 @@ export default function AppPortal() {
                   rows={3}
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Provide event details, venue address, and reporting time"
+                  
                   required
                 />
               </div>
@@ -1758,11 +1758,7 @@ export default function AppPortal() {
                   rows={3}
                   value={reviewRemarks}
                   onChange={(e) => setReviewRemarks(e.target.value)}
-                  placeholder={
-                    user.role === 'ADVISOR'
-                      ? 'e.g. Verified attendance criteria. Recommended for college representation.'
-                      : 'e.g. Approved with full attendance compensation.'
-                  }
+                  
                 />
               </div>
 
@@ -1862,7 +1858,7 @@ export default function AppPortal() {
                   className={styles.formInput}
                   value={resultData.projectName}
                   onChange={(e) => setResultData({ ...resultData, projectName: e.target.value })}
-                  placeholder="Enter project or presentation title"
+                  
                   required
                 />
               </div>
