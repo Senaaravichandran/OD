@@ -135,7 +135,7 @@ export default function AppPortal() {
     return email && email.trim().toLowerCase().endsWith('@smvec.ac.in');
   };
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     setAuthError('');
     setAuthSuccess('');
