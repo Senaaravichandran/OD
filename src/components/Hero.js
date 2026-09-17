@@ -44,19 +44,23 @@ export default function Hero() {
           </div>
 
           <div className={styles.heroCta}>
-            <button
+            <a
+              href="/downloads/smvec-od.apk"
+              download="smvec-od.apk"
               className="btnPrimary"
-              onClick={() => scrollTo('#download')}
+              id="hero-download-apk"
             >
               <span className={styles.ctaIcon}>📱</span>
-              Download App
-            </button>
-            <button
+              Download APK
+            </a>
+            <a
+              href="/app"
               className="btnOutline"
-              onClick={() => scrollTo('#features')}
+              id="hero-launch-portal"
             >
-              Learn More
-            </button>
+              <span className={styles.ctaIcon}>🚀</span>
+              Launch Web Portal
+            </a>
           </div>
         </div>
 

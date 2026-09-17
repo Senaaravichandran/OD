@@ -25,17 +25,26 @@ export default function Download() {
 
             <div className={styles.cta}>
               <a
-                href={process.env.NEXT_PUBLIC_APP_DOWNLOAD_URL || '#'}
+                href="/downloads/smvec-od.apk"
                 className={styles.downloadBtn}
-                download
+                download="smvec-od.apk"
+                id="btn-download-apk"
               >
                 <span className={styles.downloadIcon}>⬇️</span>
-                Download APK
+                Download Android APK
+              </a>
+              <a
+                href="/app"
+                className={styles.webAppBtn}
+                id="btn-launch-web-portal"
+              >
+                <span className={styles.downloadIcon}>🚀</span>
+                Launch Web Portal
               </a>
               <div className={styles.appInfo}>
-                <span className={styles.appInfoItem}>📦 Version 1.0.0</span>
-                <span className={styles.appInfoItem}>📱 Android 8.0+</span>
-                <span className={styles.appInfoItem}>💾 ~25 MB</span>
+                <span className={styles.appInfoItem}>📦 Real Android APK (v1.0.0)</span>
+                <span className={styles.appInfoItem}>📱 Android 8.0+ Compatible</span>
+                <span className={styles.appInfoItem}>💾 Direct High-Speed Download (~39 MB)</span>
               </div>
             </div>
           </div>

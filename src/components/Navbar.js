@@ -89,14 +89,11 @@ export default function Navbar() {
               </a>
             ))}
             <a
-              href="#login"
+              href="/app"
               className={styles.loginBtn}
-              onClick={(e) => {
-                e.preventDefault();
-                setMenuOpen(false);
-              }}
+              id="nav-portal-login"
             >
-              Login
+              Portal Login
             </a>
           </div>
         </div>
