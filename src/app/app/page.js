@@ -2,12 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useClerk, useUser } from '@clerk/nextjs';
+import { useClerk, useUser, useSignIn } from '@clerk/nextjs';
 import styles from './app.module.css';
 
 export default function AppPortal() {
   const clerk = useClerk();
   const { isLoaded: clerkLoaded, isSignedIn: clerkSignedIn, user: clerkUser } = useUser();
+  const { isLoaded: signInLoaded, signIn } = useSignIn();
 
   // Current Authenticated User State: { name, email, role: 'STUDENT' | 'ADVISOR' | 'HOD', rollNumber, year, section }
   const [user, setUser] = useState(null);
@@ -200,18 +201,25 @@ export default function AppPortal() {
   const handleGoogleSignIn = async () => {
     setAuthError('');
     try {
-      if (clerk?.authenticateWithRedirect) {
-        await clerk.authenticateWithRedirect({
+      if (signIn) {
+        await signIn.authenticateWithRedirect({
           strategy: 'oauth_google',
           redirectUrl: '/sso-callback',
           redirectUrlComplete: '/app',
         });
-      } else if (clerk?.openSignIn) {
+        return;
+      }
+      if (clerk?.openSignIn) {
         clerk.openSignIn();
+        return;
       }
     } catch (err) {
       console.error('Clerk Google Auth error:', err);
-      setAuthError(err.message || 'Google Authentication failed. Please try again.');
+      if (clerk?.openSignIn) {
+        clerk.openSignIn();
+      } else {
+        setAuthError(err.message || 'Google Authentication failed. Please try again.');
+      }
     }
   };
 
