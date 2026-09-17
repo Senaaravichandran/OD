@@ -2,9 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useClerk, useUser } from '@clerk/nextjs';
 import styles from './app.module.css';
 
 export default function AppPortal() {
+  const clerk = useClerk();
+  const { isLoaded: clerkLoaded, isSignedIn: clerkSignedIn, user: clerkUser } = useUser();
+
   // Current Authenticated User State: { name, email, role: 'STUDENT' | 'ADVISOR' | 'HOD', rollNumber, year, section }
   const [user, setUser] = useState(null);
 
@@ -165,46 +169,49 @@ export default function AppPortal() {
     }
   };
 
-  // Google Sign-In Simulation (@smvec.ac.in domain enforced)
-  const handleGoogleSignIn = () => {
-    setAuthError('');
-    const promptEmail = prompt('Enter your SMVEC Google Workspace email address (@smvec.ac.in):', `${authRoleTab.toLowerCase()}@smvec.ac.in`);
-    if (!promptEmail) return;
+  // Clerk Google Workspace Auth Synchronization (@smvec.ac.in enforced)
+  useEffect(() => {
+    if (clerkLoaded && clerkSignedIn && clerkUser && !user) {
+      const primaryEmail = clerkUser.primaryEmailAddress?.emailAddress?.toLowerCase() || '';
+      if (!validateSmvecDomain(primaryEmail)) {
+        setAuthError(`Access Denied: Google account (${primaryEmail}) is not an @smvec.ac.in institutional account. Please sign out and use your official college Google account.`);
+        if (clerk?.signOut) clerk.signOut();
+        return;
+      }
 
-    if (!validateSmvecDomain(promptEmail)) {
-      alert('Authentication Failed: Only @smvec.ac.in institutional Google accounts are allowed.');
-      return;
-    }
-
-    const cleanEmail = promptEmail.trim().toLowerCase();
-    if (authRoleTab === 'STUDENT') {
-      const rollMatch = cleanEmail.match(/\d+[a-zA-Z]+\d+/);
+      const role = (authRoleTab || 'STUDENT').toUpperCase();
+      const rollMatch = primaryEmail.match(/\d+[a-zA-Z]+\d+/);
       const defaultRoll = rollMatch ? rollMatch[0].toUpperCase() : '21IT101';
+
       setUser({
-        name: cleanEmail.split('@')[0].toUpperCase(),
-        email: cleanEmail,
-        role: 'STUDENT',
+        name: clerkUser.fullName || primaryEmail.split('@')[0].toUpperCase(),
+        email: primaryEmail,
+        role: role,
         rollNumber: defaultRoll,
         department: 'Information Technology',
         year: 3,
         section: 'A',
       });
-    } else if (authRoleTab === 'ADVISOR') {
-      setUser({
-        name: 'Class Advisor',
-        email: cleanEmail,
-        role: 'ADVISOR',
-        department: 'Information Technology',
-        year: 3,
-        section: 'A',
-      });
-    } else if (authRoleTab === 'HOD') {
-      setUser({
-        name: 'Dr. P. Sivakumar (HOD/IT)',
-        email: cleanEmail,
-        role: 'HOD',
-        department: 'Information Technology',
-      });
+      setAuthError('');
+    }
+  }, [clerkLoaded, clerkSignedIn, clerkUser, user, authRoleTab, clerk]);
+
+  // Real Clerk Google Sign-In
+  const handleGoogleSignIn = async () => {
+    setAuthError('');
+    try {
+      if (clerk?.authenticateWithRedirect) {
+        await clerk.authenticateWithRedirect({
+          strategy: 'oauth_google',
+          redirectUrl: '/sso-callback',
+          redirectUrlComplete: '/app',
+        });
+      } else if (clerk?.openSignIn) {
+        clerk.openSignIn();
+      }
+    } catch (err) {
+      console.error('Clerk Google Auth error:', err);
+      setAuthError(err.message || 'Google Authentication failed. Please try again.');
     }
   };
 
@@ -818,7 +825,12 @@ export default function AppPortal() {
 
             {/* Sign Out Button */}
             <button
-              onClick={() => setUser(null)}
+              onClick={() => {
+                setUser(null);
+                if (clerkSignedIn && clerk?.signOut) {
+                  clerk.signOut();
+                }
+              }}
               style={{
                 padding: '6px 12px',
                 fontSize: '0.76rem',
