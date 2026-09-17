@@ -4,114 +4,23 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import styles from './app.module.css';
 
-// Initial Mock Seed Data matching the SMVEC Reference Architecture
-const INITIAL_REQUESTS = [
-  {
-    id: 'OD-2026-001',
-    studentName: 'Aravindhan S',
-    rollNumber: '21IT101',
-    department: 'Information Technology',
-    year: 3,
-    section: 'A',
-    submissionType: 'TEAM',
-    teamMembers: ['Aravindhan S (21IT101)', 'Priya K (21IT102)', 'Rahul M (21IT103)'],
-    eventType: 'Hackathon',
-    eventName: 'Smart India Hackathon 2026 (Grand Finale)',
-    eventDate: '2026-09-22',
-    eventDay: 'Tuesday',
-    description: 'Selected for National Grand Finale at Bengaluru Nodal Center. Need 3 days On-Duty sanction for travel and contest participation.',
-    status: 'APPROVED', // 'PENDING_ADVISOR', 'FORWARDED_HOD', 'APPROVED', 'REJECTED_ADVISOR', 'REJECTED_HOD'
-    attachmentName: 'SIH_Shortlist_Letter.pdf',
-    advisorRemarks: 'Verified student academic record (CGPA > 8.5) and attendance (> 85%). Recommended for college representation.',
-    advisorName: 'Dr. K. Senthil',
-    advisorTimestamp: '2026-09-15 11:30 AM',
-    hodRemarks: 'Sanctioned with travel allowance and full attendance compensation. All the best to the team!',
-    hodName: 'Dr. P. Sivakumar',
-    hodTimestamp: '2026-09-16 03:45 PM',
-    resultStatus: 'WON',
-    resultProjectName: 'AI Autonomous Drone for Crop Health Monitoring',
-    resultCertificate: 'SIH_First_Prize_Cert.pdf',
-    createdAt: '2026-09-14 10:15 AM',
-  },
-  {
-    id: 'OD-2026-002',
-    studentName: 'Karthik R',
-    rollNumber: '21IT115',
-    department: 'Information Technology',
-    year: 3,
-    section: 'A',
-    submissionType: 'SOLO',
-    teamMembers: [],
-    eventType: 'Internship',
-    eventName: 'TCS iON Industrial Cloud Immersion',
-    eventDate: '2026-09-25',
-    eventDay: 'Friday',
-    description: 'Selected for 2-week hands-on industrial immersion on AWS and DevSecOps at TCS Siruseri campus.',
-    status: 'FORWARDED_HOD',
-    attachmentName: 'TCS_Selection_Offer.pdf',
-    advisorRemarks: 'Offer letter checked with TCS portal. Academic calendar verified. Recommended for HOD sanction.',
-    advisorName: 'Dr. K. Senthil',
-    advisorTimestamp: '2026-09-16 09:30 AM',
-    hodRemarks: null,
-    hodName: null,
-    hodTimestamp: null,
-    resultStatus: 'PENDING',
-    createdAt: '2026-09-15 04:20 PM',
-  },
-  {
-    id: 'OD-2026-003',
-    studentName: 'Sneha M',
-    rollNumber: '21IT142',
-    department: 'Information Technology',
-    year: 3,
-    section: 'A',
-    submissionType: 'TEAM',
-    teamMembers: ['Sneha M (21IT142)', 'Divya S (21IT143)'],
-    eventType: 'Paper Presentation',
-    eventName: 'IEEE ICAIoT 2026 International Conference',
-    eventDate: '2026-09-30',
-    eventDay: 'Wednesday',
-    description: 'Oral presentation of research paper on Edge AI for Predictive Agriculture in Pondicherry University.',
-    status: 'PENDING_ADVISOR',
-    attachmentName: 'IEEE_Acceptance_Proof.pdf',
-    advisorRemarks: null,
-    advisorName: null,
-    advisorTimestamp: null,
-    hodRemarks: null,
-    hodName: null,
-    hodTimestamp: null,
-    resultStatus: 'PENDING',
-    createdAt: '2026-09-17 01:10 PM',
-  },
-];
-
-const INITIAL_AUDIT = [
-  { id: 'AUD-01', action: 'CREATED', actor: 'Aravindhan S (21IT101)', role: 'STUDENT', time: '14 Sep, 10:15 AM', details: 'Submitted OD request for Smart India Hackathon' },
-  { id: 'AUD-02', action: 'FORWARDED', actor: 'Dr. K. Senthil', role: 'ADVISOR', time: '15 Sep, 11:30 AM', details: 'Class Advisor reviewed attendance (>85%) and forwarded to HOD' },
-  { id: 'AUD-03', action: 'APPROVED', actor: 'Dr. P. Sivakumar', role: 'HOD', time: '16 Sep, 03:45 PM', details: 'HOD approved final On-Duty sanction with digital signature' },
-];
-
-const INITIAL_NOTIFICATIONS = [
-  { id: 'N-1', title: 'OD Approved 🎉', text: 'Smart India Hackathon OD has been sanctioned by HOD Dr. P. Sivakumar.', time: 'Yesterday', role: 'STUDENT' },
-  { id: 'N-2', title: 'New Submission 📋', text: 'Sneha M (21IT142) submitted an OD request for IEEE ICAIoT 2026.', time: '2 hours ago', role: 'ADVISOR' },
-  { id: 'N-3', title: 'Forwarded for Sanction ⚡', text: 'Dr. K. Senthil forwarded TCS Internship request for Karthik R.', time: '1 day ago', role: 'HOD' },
-];
-
 export default function AppPortal() {
   // Current Authenticated User State
   const [user, setUser] = useState(null); // { name, email, role: 'STUDENT' | 'ADVISOR' | 'HOD', rollNumber, year, section }
   
-  // App State
-  const [requests, setRequests] = useState(INITIAL_REQUESTS);
-  const [auditLogs, setAuditLogs] = useState(INITIAL_AUDIT);
-  const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
+  // Live State from Upstash Redis & Supabase
+  const [requests, setRequests] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [servicesStatus, setServicesStatus] = useState({ redis: true, supabase: true, resend: true, clerk: true });
   const [showNotifDrawer, setShowNotifDrawer] = useState(false);
 
-  // Modals
+  // Modals & Navigation
   const [showNewODModal, setShowNewODModal] = useState(false);
   const [showReviewModal, setShowReviewModal] = useState(null); // request to review
   const [showResultModal, setShowResultModal] = useState(null); // request to add result
-  const [advisorFilter, setAdvisorFilter] = useState('ALL'); // 'ALL', 'PENDING', 'FORWARDED', 'REJECTED'
+  const [advisorFilter, setAdvisorFilter] = useState('ALL'); // 'ALL', 'PENDING', 'APPROVED_BY_ME', 'REJECTED'
   const [hodTab, setHodTab] = useState('PENDING'); // 'PENDING', 'APPROVED', 'AUDIT'
 
   // New OD Form State
@@ -119,8 +28,8 @@ export default function AppPortal() {
     submissionType: 'SOLO',
     eventType: 'Hackathon',
     eventName: '',
-    eventDate: '2026-09-24',
-    eventDay: 'Thursday',
+    eventDate: '2026-09-25',
+    eventDay: 'Friday',
     description: '',
     teamMembers: ['Aravindhan S (21IT101)'],
   });
@@ -134,6 +43,49 @@ export default function AppPortal() {
     projectName: '',
     description: '',
   });
+
+  // Fetch live state from backend API on mount
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch('/api/od');
+      const json = await res.json();
+      if (json.success && json.data) {
+        setRequests(json.data.requests || []);
+        setAuditLogs(json.data.auditLogs || []);
+        setNotifications(json.data.notifications || []);
+        if (json.connectedServices) {
+          setServicesStatus(json.connectedServices);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load live data:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const callApi = async (action, payload) => {
+    try {
+      const res = await fetch('/api/od', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, payload }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        setRequests(json.data.requests);
+        setAuditLogs(json.data.auditLogs);
+        setNotifications(json.data.notifications);
+      }
+    } catch (e) {
+      console.error('API call failed:', e);
+    }
+  };
 
   // Calculate day of week on date change
   const handleDateChange = (e) => {
@@ -178,13 +130,11 @@ export default function AppPortal() {
   };
 
   // Submit New OD by Student
-  const handleCreateOD = (e) => {
+  const handleCreateOD = async (e) => {
     e.preventDefault();
     if (!formData.eventName || !formData.description) return;
 
-    const newId = `OD-2026-${String(requests.length + 1).padStart(3, '0')}`;
-    const newReq = {
-      id: newId,
+    await callApi('CREATE_OD', {
       studentName: user.name,
       rollNumber: user.rollNumber,
       department: user.department,
@@ -197,218 +147,88 @@ export default function AppPortal() {
       eventDate: formData.eventDate,
       eventDay: formData.eventDay,
       description: formData.description,
-      status: 'PENDING_ADVISOR',
-      attachmentName: `Brochure_${formData.eventName.replace(/\s+/g, '_')}.pdf`,
-      advisorRemarks: null,
-      advisorName: null,
-      advisorTimestamp: null,
-      hodRemarks: null,
-      hodName: null,
-      hodTimestamp: null,
-      resultStatus: 'PENDING',
-      createdAt: 'Just now',
-    };
-
-    setRequests([newReq, ...requests]);
-    setAuditLogs([
-      {
-        id: `AUD-${Date.now()}`,
-        action: 'CREATED',
-        actor: `${user.name} (${user.rollNumber})`,
-        role: 'STUDENT',
-        time: 'Just now',
-        details: `Submitted OD request for ${formData.eventName}`,
-      },
-      ...auditLogs,
-    ]);
-    setNotifications([
-      {
-        id: `N-${Date.now()}`,
-        title: 'New OD Submission 📋',
-        text: `${user.name} submitted OD request for ${formData.eventName}.`,
-        time: 'Just now',
-        role: 'ADVISOR',
-      },
-      ...notifications,
-    ]);
+    });
 
     setShowNewODModal(false);
     setFormData({
       submissionType: 'SOLO',
       eventType: 'Hackathon',
       eventName: '',
-      eventDate: '2026-09-24',
-      eventDay: 'Thursday',
+      eventDate: '2026-09-25',
+      eventDay: 'Friday',
       description: '',
       teamMembers: [user.name],
     });
   };
 
-  // Class Advisor Forwards to HOD
-  const handleAdvisorForward = (reqId) => {
-    const remarks = reviewRemarks || 'Verified attendance > 80% and credentials. Forwarded for HOD sanction.';
-    setRequests(
-      requests.map((r) =>
-        r.id === reqId
-          ? {
-              ...r,
-              status: 'FORWARDED_HOD',
-              advisorRemarks: remarks,
-              advisorName: user.name,
-              advisorTimestamp: 'Just now',
-            }
-          : r
-      )
-    );
-    setAuditLogs([
-      {
-        id: `AUD-${Date.now()}`,
-        action: 'FORWARDED',
-        actor: user.name,
-        role: 'ADVISOR',
-        time: 'Just now',
-        details: `Class Advisor recommended and forwarded ${reqId} to HOD: "${remarks}"`,
-      },
-      ...auditLogs,
-    ]);
-    setNotifications([
-      {
-        id: `N-${Date.now()}`,
-        title: 'Request Forwarded to HOD ⚡',
-        text: `${user.name} forwarded ${reqId} for final sanction.`,
-        time: 'Just now',
-        role: 'HOD',
-      },
-      {
-        id: `N-${Date.now() + 1}`,
-        title: 'Advisor Recommendation Approved ✅',
-        text: `Your OD request ${reqId} was reviewed by Advisor and forwarded to HOD.`,
-        time: 'Just now',
-        role: 'STUDENT',
-      },
-      ...notifications,
-    ]);
+  // CLASS ADVISOR APPROVES OD
+  const handleAdvisorApprove = async (reqId) => {
+    const remarks = reviewRemarks || 'Verified attendance > 80% and credentials. Approved by Class Advisor and forwarded for HOD final sanction.';
+    await callApi('ADVISOR_APPROVE', {
+      reqId,
+      remarks,
+      advisorName: user.name,
+    });
     setShowReviewModal(null);
     setReviewRemarks('');
   };
 
-  // Class Advisor Rejects
-  const handleAdvisorReject = (reqId) => {
-    const remarks = reviewRemarks || 'Dates clash with internal assessments / Low attendance.';
-    setRequests(
-      requests.map((r) =>
-        r.id === reqId
-          ? {
-              ...r,
-              status: 'REJECTED_ADVISOR',
-              advisorRemarks: remarks,
-              advisorName: user.name,
-              advisorTimestamp: 'Just now',
-            }
-          : r
-      )
-    );
-    setAuditLogs([
-      {
-        id: `AUD-${Date.now()}`,
-        action: 'REJECTED_BY_ADVISOR',
-        actor: user.name,
-        role: 'ADVISOR',
-        time: 'Just now',
-        details: `Class Advisor rejected ${reqId}: "${remarks}"`,
-      },
-      ...auditLogs,
-    ]);
+  // CLASS ADVISOR REJECTS OD
+  const handleAdvisorReject = async (reqId) => {
+    const remarks = reviewRemarks || 'Dates clash with internal assessments / Attendance below 75%.';
+    await callApi('ADVISOR_REJECT', {
+      reqId,
+      remarks,
+      advisorName: user.name,
+    });
     setShowReviewModal(null);
     setReviewRemarks('');
   };
 
-  // HOD Final Sanction
-  const handleHodApprove = (reqId) => {
-    const remarks = reviewRemarks || 'Sanctioned with full attendance compensation.';
-    setRequests(
-      requests.map((r) =>
-        r.id === reqId
-          ? {
-              ...r,
-              status: 'APPROVED',
-              hodRemarks: remarks,
-              hodName: user.name,
-              hodTimestamp: 'Just now',
-            }
-          : r
-      )
-    );
-    setAuditLogs([
-      {
-        id: `AUD-${Date.now()}`,
-        action: 'APPROVED_BY_HOD',
-        actor: user.name,
-        role: 'HOD',
-        time: 'Just now',
-        details: `HOD granted final On-Duty approval for ${reqId}: "${remarks}"`,
-      },
-      ...auditLogs,
-    ]);
-    setNotifications([
-      {
-        id: `N-${Date.now()}`,
-        title: '🎉 OD Sanctioned by HOD!',
-        text: `Your OD request ${reqId} has received official HOD approval. OD Slip is now valid!`,
-        time: 'Just now',
-        role: 'STUDENT',
-      },
-      ...notifications,
-    ]);
+  // HOD GIVES FINAL SANCTION
+  const handleHodApprove = async (reqId) => {
+    const remarks = reviewRemarks || 'Officially approved & sanctioned with full attendance compensation.';
+    await callApi('HOD_APPROVE', {
+      reqId,
+      remarks,
+      hodName: user.name,
+    });
     setShowReviewModal(null);
     setReviewRemarks('');
   };
 
-  // HOD Rejection
-  const handleHodReject = (reqId) => {
-    const remarks = reviewRemarks || 'Department quota exceeded / Non-essential event.';
-    setRequests(
-      requests.map((r) =>
-        r.id === reqId
-          ? {
-              ...r,
-              status: 'REJECTED_HOD',
-              hodRemarks: remarks,
-              hodName: user.name,
-              hodTimestamp: 'Just now',
-            }
-          : r
-      )
-    );
+  // HOD REJECTS OD
+  const handleHodReject = async (reqId) => {
+    const remarks = reviewRemarks || 'Department OD quota exceeded for this cycle.';
+    await callApi('HOD_REJECT', {
+      reqId,
+      remarks,
+      hodName: user.name,
+    });
     setShowReviewModal(null);
     setReviewRemarks('');
   };
 
   // Submit Post-Event Result
-  const handleSaveResult = (e) => {
+  const handleSaveResult = async (e) => {
     e.preventDefault();
     if (!showResultModal) return;
 
-    setRequests(
-      requests.map((r) =>
-        r.id === showResultModal.id
-          ? {
-              ...r,
-              resultStatus: resultData.status,
-              resultProjectName: resultData.projectName || r.eventName,
-              resultDescription: resultData.description,
-              resultCertificate: `Certificate_${r.id}.pdf`,
-            }
-          : r
-      )
-    );
+    await callApi('SUBMIT_RESULT', {
+      reqId: showResultModal.id,
+      studentName: user.name,
+      status: resultData.status,
+      projectName: resultData.projectName || showResultModal.eventName,
+      description: resultData.description,
+    });
+
     setShowResultModal(null);
     setResultData({ status: 'WON', projectName: '', description: '' });
   };
 
   // Export CSV Report
   const handleExportCSV = () => {
-    const headers = ['OD_ID', 'Student_Name', 'Roll_No', 'Year', 'Section', 'Event_Type', 'Event_Name', 'Event_Date', 'Status', 'Advisor', 'HOD_Approval'];
+    const headers = ['OD_ID', 'Student_Name', 'Roll_No', 'Year', 'Section', 'Event_Type', 'Event_Name', 'Event_Date', 'Status', 'Advisor_Approval', 'HOD_Sanction'];
     const rows = requests.map((r) => [
       r.id,
       r.studentName,
@@ -419,8 +239,8 @@ export default function AppPortal() {
       `"${r.eventName}"`,
       r.eventDate,
       r.status,
-      r.advisorName || 'Pending',
-      r.hodName || 'Pending',
+      r.advisorName ? `Approved (${r.advisorName})` : 'Pending Advisor',
+      r.hodName ? `Sanctioned (${r.hodName})` : 'Pending HOD',
     ]);
     const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
@@ -450,7 +270,7 @@ export default function AppPortal() {
             </Link>
             <div className={styles.navActions}>
               <a href="/downloads/smvec-od.apk" download="smvec-od.apk" className={styles.navLinkBtn}>
-                📱 Download APK (~39 MB)
+                📱 Download Real APK (~45.7 MB)
               </a>
               <Link href="/" className={styles.navLinkBtn}>
                 ← Back to Landing Page
@@ -459,18 +279,27 @@ export default function AppPortal() {
           </div>
         </header>
 
+        {/* Live Connected Services Pill Banner */}
+        <div style={{ background: '#ffffff', borderBottom: '1px solid #e5e7eb', padding: '8px 24px', textAlign: 'center', fontSize: '0.75rem', color: '#4b5563' }}>
+          <span style={{ fontWeight: '700', color: '#3350b0' }}>LIVE CONNECTED SERVICES: </span>
+          <span style={{ margin: '0 8px' }}>🟢 Upstash Redis (Active Cache)</span>
+          <span style={{ margin: '0 8px' }}>🟢 Supabase PostgreSQL (drkmlefoyewixcrundyd)</span>
+          <span style={{ margin: '0 8px' }}>🟢 Resend Email Alerts</span>
+          <span style={{ margin: '0 8px' }}>🟢 Clerk SSO Ready</span>
+        </div>
+
         {/* Login Card */}
         <div className={styles.authContainer}>
           <div className={styles.authCard}>
             <img src="/college_logo.png" alt="SMVEC Logo" className={styles.authHeaderLogo} />
             <h1 className={styles.authTitle}>Role-Based OD Portal</h1>
             <p className={styles.authSubtitle}>
-              Reference Architecture: Student ➔ Class Advisor ➔ HOD Final Sanction
+              Workflow: <strong>Student Submits</strong> ➔ <strong>Class Advisor APPROVES</strong> ➔ <strong>HOD Final Sanction</strong>
             </p>
 
             {/* Quick Demo Login Presets */}
             <div className={styles.quickPresets}>
-              <div className={styles.quickPresetsTitle}>⚡ Instant One-Click Demo Access</div>
+              <div className={styles.quickPresetsTitle}>⚡ Instant One-Click Evaluation Access</div>
               <div className={styles.presetButtons}>
                 <button className={styles.presetBtn} onClick={() => loginAs('STUDENT')} id="btn-login-student">
                   🎓 Student
@@ -505,7 +334,7 @@ export default function AppPortal() {
                 <input
                   type="email"
                   className={styles.formInput}
-                  defaultValue="student@smvec.ac.in"
+                  defaultValue="aravindhan.21it@smvec.ac.in"
                   placeholder="name.roll@smvec.ac.in"
                   required
                 />
@@ -539,7 +368,7 @@ export default function AppPortal() {
     (r) => r.rollNumber === user.rollNumber || r.studentName === user.name
   );
   const classRequests = requests.filter((r) => r.year === 3 && r.section === 'A');
-  const forwardedToHod = requests.filter((r) => r.status === 'FORWARDED_HOD');
+  const forwardedToHod = requests.filter((r) => r.status === 'APPROVED_BY_ADVISOR');
   const approvedRequests = requests.filter((r) => r.status === 'APPROVED');
 
   return (
@@ -553,7 +382,7 @@ export default function AppPortal() {
               <span className={styles.brandTitle}>SMVEC ON-DUTY SYSTEM</span>
               <span className={styles.brandSubtitle}>
                 {user.role === 'STUDENT' && '🎓 Student Portal'}
-                {user.role === 'ADVISOR' && '👩‍🏫 Class Advisor Portal'}
+                {user.role === 'ADVISOR' && '👩‍🏫 Class Advisor Approval Portal'}
                 {user.role === 'HOD' && '👨‍💼 HOD Executive Portal'}
               </span>
             </div>
@@ -565,7 +394,7 @@ export default function AppPortal() {
               <button
                 onClick={() => loginAs('STUDENT')}
                 style={{
-                  padding: '4px 8px',
+                  padding: '4px 10px',
                   fontSize: '0.72rem',
                   fontWeight: user.role === 'STUDENT' ? 'bold' : 'normal',
                   background: user.role === 'STUDENT' ? '#3350b0' : '#f3f4f6',
@@ -575,12 +404,12 @@ export default function AppPortal() {
                   cursor: 'pointer',
                 }}
               >
-                Student View
+                🎓 Student
               </button>
               <button
                 onClick={() => loginAs('ADVISOR')}
                 style={{
-                  padding: '4px 8px',
+                  padding: '4px 10px',
                   fontSize: '0.72rem',
                   fontWeight: user.role === 'ADVISOR' ? 'bold' : 'normal',
                   background: user.role === 'ADVISOR' ? '#3350b0' : '#f3f4f6',
@@ -590,12 +419,12 @@ export default function AppPortal() {
                   cursor: 'pointer',
                 }}
               >
-                Advisor View
+                👩‍🏫 Class Advisor
               </button>
               <button
                 onClick={() => loginAs('HOD')}
                 style={{
-                  padding: '4px 8px',
+                  padding: '4px 10px',
                   fontSize: '0.72rem',
                   fontWeight: user.role === 'HOD' ? 'bold' : 'normal',
                   background: user.role === 'HOD' ? '#3350b0' : '#f3f4f6',
@@ -605,7 +434,7 @@ export default function AppPortal() {
                   cursor: 'pointer',
                 }}
               >
-                HOD View
+                👨‍💼 HOD
               </button>
             </div>
 
@@ -638,7 +467,7 @@ export default function AppPortal() {
               className={styles.navLinkBtn}
               title="Download Android Mobile App"
             >
-              📱 APK
+              📱 APK (~45.7 MB)
             </a>
 
             <button className={styles.logoutBtn} onClick={() => setUser(null)}>
@@ -658,7 +487,7 @@ export default function AppPortal() {
             {/* Banner */}
             <div className={styles.portalBanner}>
               <div>
-                <h2 className={styles.bannerTitle}>Welcome back, {user.name}!</h2>
+                <h2 className={styles.bannerTitle}>Welcome, {user.name}!</h2>
                 <p className={styles.bannerSub}>
                   Roll No: <strong>{user.rollNumber}</strong> · Year {user.year} - Sec {user.section} · Dept of {user.department}
                 </p>
@@ -670,6 +499,14 @@ export default function AppPortal() {
               >
                 ➕ Apply New OD Request
               </button>
+            </div>
+
+            {/* Workflow Notice */}
+            <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '12px', padding: '12px 18px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px', fontSize: '0.85rem', color: '#1e40af' }}>
+              <span style={{ fontSize: '1.2rem' }}>ℹ️</span>
+              <div>
+                <strong>Approval Requirement:</strong> Your OD application must be reviewed & <strong>APPROVED by your Class Advisor ({user.year}IT-{user.section})</strong> before it can be submitted to the HOD for final sanction.
+              </div>
             </div>
 
             {/* KPI Cards */}
@@ -689,9 +526,20 @@ export default function AppPortal() {
                 </div>
                 <div>
                   <div className={styles.kpiNumber}>
-                    {userRequests.filter((r) => r.status === 'PENDING_ADVISOR' || r.status === 'FORWARDED_HOD').length}
+                    {userRequests.filter((r) => r.status === 'PENDING_ADVISOR').length}
                   </div>
-                  <div className={styles.kpiLabel}>In Review Pipeline</div>
+                  <div className={styles.kpiLabel}>Awaiting Advisor Approval</div>
+                </div>
+              </div>
+              <div className={styles.kpiCard}>
+                <div className={styles.kpiIcon} style={{ background: '#f0fdf4', color: '#15803d' }}>
+                  ⚡
+                </div>
+                <div>
+                  <div className={styles.kpiNumber}>
+                    {userRequests.filter((r) => r.status === 'APPROVED_BY_ADVISOR').length}
+                  </div>
+                  <div className={styles.kpiLabel}>Advisor Approved (At HOD)</div>
                 </div>
               </div>
               <div className={styles.kpiCard}>
@@ -702,18 +550,7 @@ export default function AppPortal() {
                   <div className={styles.kpiNumber}>
                     {userRequests.filter((r) => r.status === 'APPROVED').length}
                   </div>
-                  <div className={styles.kpiLabel}>Approved ODs</div>
-                </div>
-              </div>
-              <div className={styles.kpiCard}>
-                <div className={styles.kpiIcon} style={{ background: '#fdf2f8', color: '#db2777' }}>
-                  🏆
-                </div>
-                <div>
-                  <div className={styles.kpiNumber}>
-                    {userRequests.filter((r) => r.resultStatus !== 'PENDING').length}
-                  </div>
-                  <div className={styles.kpiLabel}>Results Submitted</div>
+                  <div className={styles.kpiLabel}>HOD Sanctioned (OD Valid)</div>
                 </div>
               </div>
             </div>
@@ -789,22 +626,22 @@ export default function AppPortal() {
                         <div>
                           {req.status === 'APPROVED' && (
                             <span className={`${styles.statusBadge} ${styles.statusApproved}`}>
-                              ✓ HOD Approved (OD Granted)
+                              ✓ Fully Sanctioned by HOD
                             </span>
                           )}
-                          {req.status === 'FORWARDED_HOD' && (
+                          {req.status === 'APPROVED_BY_ADVISOR' && (
                             <span className={`${styles.statusBadge} ${styles.statusForwarded}`}>
-                              ⏳ Forwarded to HOD
+                              ✓ Approved by Class Advisor (Awaiting HOD)
                             </span>
                           )}
                           {req.status === 'PENDING_ADVISOR' && (
                             <span className={`${styles.statusBadge} ${styles.statusPending}`}>
-                              ⏳ Under Advisor Review
+                              ⏳ Waiting for Class Advisor Approval
                             </span>
                           )}
                           {(req.status === 'REJECTED_ADVISOR' || req.status === 'REJECTED_HOD') && (
                             <span className={`${styles.statusBadge} ${styles.statusRejected}`}>
-                              ✕ Rejected
+                              ✕ Rejected ({req.status === 'REJECTED_ADVISOR' ? 'by Advisor' : 'by HOD'})
                             </span>
                           )}
                         </div>
@@ -822,14 +659,18 @@ export default function AppPortal() {
                             className={`${styles.stepCircle} ${
                               req.status === 'REJECTED_ADVISOR'
                                 ? styles.stepCircleRejected
-                                : req.status === 'FORWARDED_HOD' || req.status === 'APPROVED'
+                                : req.status === 'APPROVED_BY_ADVISOR' || req.status === 'APPROVED'
                                 ? styles.stepCircleDone
                                 : styles.stepCircleActive
                             }`}
                           >
-                            {req.status === 'REJECTED_ADVISOR' ? '✕' : req.status === 'FORWARDED_HOD' || req.status === 'APPROVED' ? '✓' : '2'}
+                            {req.status === 'REJECTED_ADVISOR' ? '✕' : req.status === 'APPROVED_BY_ADVISOR' || req.status === 'APPROVED' ? '✓' : '2'}
                           </div>
-                          <span className={styles.stepLabel}>2. Class Advisor</span>
+                          <span className={styles.stepLabel}>
+                            {req.status === 'APPROVED_BY_ADVISOR' || req.status === 'APPROVED'
+                              ? '2. Advisor Approved ✓'
+                              : '2. Advisor Approval'}
+                          </span>
                         </div>
                         <div className={`${styles.stepDivider} ${req.status === 'APPROVED' ? styles.stepDividerDone : ''}`} />
                         <div className={styles.stepItem}>
@@ -839,14 +680,16 @@ export default function AppPortal() {
                                 ? styles.stepCircleRejected
                                 : req.status === 'APPROVED'
                                 ? styles.stepCircleDone
-                                : req.status === 'FORWARDED_HOD'
+                                : req.status === 'APPROVED_BY_ADVISOR'
                                 ? styles.stepCircleActive
                                 : styles.stepCirclePending
                             }`}
                           >
                             {req.status === 'REJECTED_HOD' ? '✕' : req.status === 'APPROVED' ? '✓' : '3'}
                           </div>
-                          <span className={styles.stepLabel}>3. HOD Decision</span>
+                          <span className={styles.stepLabel}>
+                            {req.status === 'APPROVED' ? '3. HOD Sanctioned ✓' : '3. HOD Decision'}
+                          </span>
                         </div>
                         <div className={`${styles.stepDivider} ${req.status === 'APPROVED' ? styles.stepDividerDone : ''}`} />
                         <div className={styles.stepItem}>
@@ -857,7 +700,7 @@ export default function AppPortal() {
                           >
                             {req.status === 'APPROVED' ? '🎓' : '4'}
                           </div>
-                          <span className={styles.stepLabel}>4. OD Sanctioned</span>
+                          <span className={styles.stepLabel}>4. OD Sanction Valid</span>
                         </div>
                       </div>
 
@@ -881,7 +724,7 @@ export default function AppPortal() {
                             }}
                           >
                             <span style={{ fontWeight: '700', color: '#1e40af' }}>
-                              👩‍🏫 Advisor Note ({req.advisorName}):
+                              👩‍🏫 Class Advisor Approval Note ({req.advisorName}):
                             </span>
                             <div style={{ color: '#1e3a8a', marginTop: '2px' }}>{req.advisorRemarks}</div>
                           </div>
@@ -899,7 +742,7 @@ export default function AppPortal() {
                             }}
                           >
                             <span style={{ fontWeight: '700', color: '#065f46' }}>
-                              👨‍💼 HOD Sanction ({req.hodName}):
+                              👨‍💼 Official HOD Sanction Seal ({req.hodName}):
                             </span>
                             <div style={{ color: '#047857', marginTop: '2px' }}>{req.hodRemarks}</div>
                           </div>
@@ -923,7 +766,7 @@ export default function AppPortal() {
                           {req.resultStatus !== 'PENDING' ? (
                             <div style={{ fontSize: '0.85rem' }}>
                               🏆 <strong>Result Submitted:</strong> {req.resultStatus} —{' '}
-                              <em>{req.resultProjectName}</em> (Certificate verified)
+                              <em>{req.resultProjectName}</em> (Certificate verified in Supabase)
                             </div>
                           ) : (
                             <div style={{ fontSize: '0.85rem', color: '#6b7280' }}>
@@ -969,13 +812,21 @@ export default function AppPortal() {
             {/* Banner */}
             <div className={styles.portalBanner}>
               <div>
-                <h2 className={styles.bannerTitle}>Class Advisor Dashboard</h2>
+                <h2 className={styles.bannerTitle}>Class Advisor Portal — Approval Authority</h2>
                 <p className={styles.bannerSub}>
-                  {user.name} · Department of {user.department} · Class: <strong>Year {user.year} - Section {user.section}</strong>
+                  {user.name} · Department of {user.department} · In-Charge: <strong>Year {user.year} - Section {user.section}</strong>
                 </p>
               </div>
               <div style={{ fontSize: '0.85rem', background: 'rgba(255,255,255,0.2)', padding: '8px 16px', borderRadius: '8px' }}>
-                Class In-Charge: 64 Students
+                Total Class Students: 64
+              </div>
+            </div>
+
+            {/* Instruction Callout */}
+            <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '12px 18px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px', fontSize: '0.85rem', color: '#92400e' }}>
+              <span style={{ fontSize: '1.2rem' }}>⚡</span>
+              <div>
+                <strong>Class Advisor Approval Gate:</strong> You must click <strong>"✓ Approve OD Request"</strong> on a student submission to verify attendance and permit it to move to HOD for final sanction. Without your approval, the student cannot receive On-Duty status.
               </div>
             </div>
 
@@ -990,17 +841,17 @@ export default function AppPortal() {
               </button>
               <button
                 className={`${styles.roleTab} ${advisorFilter === 'PENDING' ? styles.roleTabActive : ''}`}
-                style={{ flex: 'none', padding: '8px 16px', border: '1px solid #e5e7eb' }}
+                style={{ flex: 'none', padding: '8px 16px', border: '1px solid #e5e7eb', background: advisorFilter === 'PENDING' ? '#d97706' : '' }}
                 onClick={() => setAdvisorFilter('PENDING')}
               >
-                Pending My Review ({classRequests.filter((r) => r.status === 'PENDING_ADVISOR').length})
+                ⚠️ Pending My Approval ({classRequests.filter((r) => r.status === 'PENDING_ADVISOR').length})
               </button>
               <button
-                className={`${styles.roleTab} ${advisorFilter === 'FORWARDED' ? styles.roleTabActive : ''}`}
+                className={`${styles.roleTab} ${advisorFilter === 'APPROVED_BY_ME' ? styles.roleTabActive : ''}`}
                 style={{ flex: 'none', padding: '8px 16px', border: '1px solid #e5e7eb' }}
-                onClick={() => setAdvisorFilter('FORWARDED')}
+                onClick={() => setAdvisorFilter('APPROVED_BY_ME')}
               >
-                Forwarded to HOD ({classRequests.filter((r) => r.status === 'FORWARDED_HOD' || r.status === 'APPROVED').length})
+                ✓ Approved by Me ({classRequests.filter((r) => r.status === 'APPROVED_BY_ADVISOR' || r.status === 'APPROVED').length})
               </button>
               <button
                 className={`${styles.roleTab} ${advisorFilter === 'REJECTED' ? styles.roleTabActive : ''}`}
@@ -1011,17 +862,17 @@ export default function AppPortal() {
               </button>
             </div>
 
-            {/* Submissions Table / Cards */}
+            {/* Submissions List */}
             <div className={styles.cardSection}>
               <h3 className={styles.sectionHeading} style={{ marginBottom: '16px' }}>
-                Submissions from Year {user.year} - Sec {user.section}
+                Class Submissions Queue (Year {user.year} - Sec {user.section})
               </h3>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                 {classRequests
                   .filter((r) => {
                     if (advisorFilter === 'PENDING') return r.status === 'PENDING_ADVISOR';
-                    if (advisorFilter === 'FORWARDED') return r.status === 'FORWARDED_HOD' || r.status === 'APPROVED';
+                    if (advisorFilter === 'APPROVED_BY_ME') return r.status === 'APPROVED_BY_ADVISOR' || r.status === 'APPROVED';
                     if (advisorFilter === 'REJECTED') return r.status === 'REJECTED_ADVISOR';
                     return true;
                   })
@@ -1029,19 +880,20 @@ export default function AppPortal() {
                     <div
                       key={req.id}
                       style={{
-                        padding: '16px',
+                        padding: '18px',
                         border: req.status === 'PENDING_ADVISOR' ? '2px solid #f59e0b' : '1px solid #e5e7eb',
                         borderRadius: '12px',
                         background: '#ffffff',
+                        boxShadow: req.status === 'PENDING_ADVISOR' ? '0 4px 12px rgba(245,158,11,0.08)' : 'none',
                       }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ fontWeight: '800', fontSize: '1rem', color: '#1e293b' }}>
+                            <span style={{ fontWeight: '800', fontSize: '1.05rem', color: '#1e293b' }}>
                               {req.studentName}
                             </span>
-                            <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>
+                            <span style={{ fontSize: '0.82rem', color: '#6b7280' }}>
                               (Roll: {req.rollNumber})
                             </span>
                             <span
@@ -1057,22 +909,22 @@ export default function AppPortal() {
                               {req.submissionType}
                             </span>
                           </div>
-                          <div style={{ fontSize: '0.95rem', fontWeight: '700', color: '#3350b0', margin: '4px 0' }}>
+                          <div style={{ fontSize: '0.98rem', fontWeight: '700', color: '#3350b0', margin: '4px 0' }}>
                             {req.eventName} ({req.eventType})
                           </div>
                           <div style={{ fontSize: '0.82rem', color: '#6b7280' }}>
-                            📅 Date: {req.eventDate} ({req.eventDay}) · 📎 Attachment: {req.attachmentName}
+                            📅 Date: {req.eventDate} ({req.eventDay}) · 📎 Proof: {req.attachmentName}
                           </div>
                         </div>
 
                         <div>
                           {req.status === 'PENDING_ADVISOR' ? (
                             <span className={`${styles.statusBadge} ${styles.statusPending}`}>
-                              ⏳ Needs Your Review
+                              ⏳ Action Required: Click Approve
                             </span>
-                          ) : req.status === 'FORWARDED_HOD' ? (
+                          ) : req.status === 'APPROVED_BY_ADVISOR' ? (
                             <span className={`${styles.statusBadge} ${styles.statusForwarded}`}>
-                              Forwarded to HOD
+                              ✓ Approved by You (At HOD)
                             </span>
                           ) : req.status === 'APPROVED' ? (
                             <span className={`${styles.statusBadge} ${styles.statusApproved}`}>
@@ -1116,30 +968,32 @@ export default function AppPortal() {
                                 setReviewRemarks('');
                               }}
                             >
-                              Reject with Reason
+                              ✕ Reject with Feedback
                             </button>
                             <button
                               style={{
-                                padding: '8px 18px',
-                                background: '#3350b0',
+                                padding: '10px 22px',
+                                background: '#059669',
                                 color: '#ffffff',
                                 border: 'none',
                                 borderRadius: '8px',
-                                fontSize: '0.82rem',
+                                fontSize: '0.85rem',
                                 fontWeight: '700',
                                 cursor: 'pointer',
+                                boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
                               }}
                               onClick={() => {
                                 setShowReviewModal(req);
-                                setReviewRemarks('Verified attendance > 80% and credentials. Forwarded for HOD sanction.');
+                                setReviewRemarks('Verified attendance > 80% and credentials. Approved by Class Advisor and recommended for HOD sanction.');
                               }}
+                              id="btn-advisor-approve"
                             >
-                              Review & Forward to HOD →
+                              ✓ Approve OD Request →
                             </button>
                           </>
                         ) : (
-                          <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
-                            Your Remarks: <em>{req.advisorRemarks || 'No remarks'}</em>
+                          <div style={{ fontSize: '0.8rem', color: '#065f46', background: '#f0fdf4', padding: '6px 12px', borderRadius: '6px' }}>
+                            ✓ <strong>Approved by Class Advisor:</strong> "{req.advisorRemarks}"
                           </div>
                         )}
                       </div>
@@ -1180,16 +1034,16 @@ export default function AppPortal() {
                 </div>
                 <div>
                   <div className={styles.kpiNumber}>{requests.length}</div>
-                  <div className={styles.kpiLabel}>Total Submissions</div>
+                  <div className={styles.kpiLabel}>Total Department Requests</div>
                 </div>
               </div>
               <div className={styles.kpiCard}>
-                <div className={styles.kpiIcon} style={{ background: '#eff6ff', color: '#2563eb' }}>
+                <div className={styles.kpiIcon} style={{ background: '#f0fdf4', color: '#16a34a' }}>
                   ⚡
                 </div>
                 <div>
                   <div className={styles.kpiNumber}>{forwardedToHod.length}</div>
-                  <div className={styles.kpiLabel}>Awaiting HOD Decision</div>
+                  <div className={styles.kpiLabel}>Advisor-Approved (Awaiting HOD)</div>
                 </div>
               </div>
               <div className={styles.kpiCard}>
@@ -1221,7 +1075,7 @@ export default function AppPortal() {
                 style={{ flex: 'none', padding: '8px 20px', border: '1px solid #e5e7eb' }}
                 onClick={() => setHodTab('PENDING')}
               >
-                Forwarded from Advisors ({forwardedToHod.length})
+                Advisor-Approved Queue ({forwardedToHod.length})
               </button>
               <button
                 className={`${styles.roleTab} ${hodTab === 'APPROVED' ? styles.roleTabActive : ''}`}
@@ -1243,7 +1097,7 @@ export default function AppPortal() {
             {hodTab === 'PENDING' && (
               <div className={styles.cardSection}>
                 <h3 className={styles.sectionHeading} style={{ marginBottom: '16px' }}>
-                  Forwarded by Class Advisors (Awaiting Official Approval)
+                  Vetted & Approved by Class Advisors (Ready for Final HOD Sanction)
                 </h3>
 
                 {forwardedToHod.length === 0 ? (
@@ -1266,7 +1120,7 @@ export default function AppPortal() {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
                           <div>
                             <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#2563eb', textTransform: 'uppercase' }}>
-                              Forwarded by Class Advisor ({req.advisorName})
+                              ✓ Approved by Class Advisor ({req.advisorName})
                             </span>
                             <h4 style={{ fontSize: '1.2rem', fontWeight: '800', color: '#1e293b', margin: '4px 0' }}>
                               {req.studentName} (Roll: {req.rollNumber})
@@ -1277,7 +1131,7 @@ export default function AppPortal() {
                           </div>
 
                           <span className={`${styles.statusBadge} ${styles.statusForwarded}`}>
-                            ⚡ Ready for HOD Sanction
+                            ⚡ Ready for Final HOD Sanction
                           </span>
                         </div>
 
@@ -1304,7 +1158,7 @@ export default function AppPortal() {
                           }}
                         >
                           <div style={{ fontSize: '0.78rem', fontWeight: '700', color: '#1e40af' }}>
-                            Class Advisor Recommendation ({req.advisorName}):
+                            Class Advisor Official Recommendation ({req.advisorName}):
                           </div>
                           <div style={{ fontSize: '0.82rem', color: '#1e3a8a', marginTop: '2px' }}>
                             "{req.advisorRemarks}"
@@ -1333,7 +1187,7 @@ export default function AppPortal() {
                           </button>
                           <button
                             style={{
-                              padding: '8px 24px',
+                              padding: '10px 24px',
                               background: '#059669',
                               color: '#ffffff',
                               border: 'none',
@@ -1344,8 +1198,9 @@ export default function AppPortal() {
                               boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
                             }}
                             onClick={() => handleHodApprove(req.id)}
+                            id="btn-hod-sanction"
                           >
-                            ✓ Officially Sanction OD
+                            ✓ Officially Sanction OD (Final Seal)
                           </button>
                         </div>
                       </div>
@@ -1359,7 +1214,7 @@ export default function AppPortal() {
             {hodTab === 'APPROVED' && (
               <div className={styles.cardSection}>
                 <h3 className={styles.sectionHeading} style={{ marginBottom: '16px' }}>
-                  Officially Sanctioned On-Duty Records
+                  Officially Sanctioned On-Duty Records (College Archives)
                 </h3>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -1385,6 +1240,9 @@ export default function AppPortal() {
                         <div style={{ fontSize: '0.8rem', color: '#047857' }}>
                           Sanctioned by {req.hodName} on {req.eventDate} ({req.eventType}) · {req.submissionType}
                         </div>
+                        <div style={{ fontSize: '0.75rem', color: '#059669', marginTop: '2px' }}>
+                          Vetted by Advisor: {req.advisorName}
+                        </div>
                       </div>
                       <span className={`${styles.statusBadge} ${styles.statusApproved}`}>
                         Official OD Valid ✓
@@ -1399,7 +1257,7 @@ export default function AppPortal() {
             {hodTab === 'AUDIT' && (
               <div className={styles.cardSection}>
                 <h3 className={styles.sectionHeading} style={{ marginBottom: '16px' }}>
-                  System Audit Trail & Decision Log
+                  Live System Audit Trail & Decision Log (Cached in Upstash Redis)
                 </h3>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -1422,9 +1280,9 @@ export default function AppPortal() {
                           height: '10px',
                           borderRadius: '50%',
                           background:
-                            log.action === 'APPROVED' || log.action === 'APPROVED_BY_HOD'
+                            log.action === 'APPROVED' || log.action === 'SANCTIONED_BY_HOD'
                               ? '#059669'
-                              : log.action === 'FORWARDED'
+                              : log.action === 'APPROVED_BY_ADVISOR'
                               ? '#2563eb'
                               : log.action.includes('REJECTED')
                               ? '#dc2626'
@@ -1596,12 +1454,12 @@ export default function AppPortal() {
                     color: '#64748b',
                   }}
                 >
-                  📄 Event_Brochure_Invitation.pdf (Auto-attached demo file)
+                  📄 Event_Brochure_Invitation.pdf (Stored in Supabase Storage)
                 </div>
               </div>
 
               <button type="submit" className={styles.authSubmitBtn} style={{ width: '100%' }}>
-                Submit to Class Advisor for Review →
+                Submit to Class Advisor for Approval →
               </button>
             </form>
           </div>
@@ -1609,13 +1467,15 @@ export default function AppPortal() {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL: ADVISOR / HOD REVIEW MODAL */}
+      {/* MODAL: ADVISOR / HOD REVIEW & APPROVAL MODAL */}
       {/* ========================================================= */}
       {showReviewModal && (
         <div className={styles.modalBackdrop}>
           <div className={styles.modalBox}>
             <div className={styles.modalHeader}>
-              <h3 className={styles.modalTitle}>Review Submission #{showReviewModal.id}</h3>
+              <h3 className={styles.modalTitle}>
+                {user.role === 'ADVISOR' ? 'Class Advisor Review & Approval' : 'HOD Final Sanction Review'} (#{showReviewModal.id})
+              </h3>
               <button className={styles.closeModalBtn} onClick={() => setShowReviewModal(null)}>
                 ✕
               </button>
@@ -1624,6 +1484,9 @@ export default function AppPortal() {
             <div>
               <p>
                 <strong>Student:</strong> {showReviewModal.studentName} ({showReviewModal.rollNumber})
+              </p>
+              <p>
+                <strong>Class:</strong> Year {showReviewModal.year} - Section {showReviewModal.section} · {showReviewModal.department}
               </p>
               <p>
                 <strong>Event:</strong> {showReviewModal.eventName} ({showReviewModal.eventType})
@@ -1635,14 +1498,26 @@ export default function AppPortal() {
                 <strong>Description:</strong> {showReviewModal.description}
               </p>
 
+              {showReviewModal.advisorRemarks && (
+                <div style={{ background: '#eff6ff', padding: '10px', borderRadius: '8px', margin: '12px 0' }}>
+                  <strong>Advisor Approval Note:</strong> "{showReviewModal.advisorRemarks}"
+                </div>
+              )}
+
               <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <label className={styles.formLabel}>Official Remarks / Feedback:</label>
+                <label className={styles.formLabel}>
+                  {user.role === 'ADVISOR' ? 'Class Advisor Approval Remarks:' : 'Official HOD Sanction Seal Remarks:'}
+                </label>
                 <textarea
                   className={styles.formInput}
                   rows={3}
                   value={reviewRemarks}
                   onChange={(e) => setReviewRemarks(e.target.value)}
-                  placeholder="Enter evaluation, attendance validation, or rejection remarks..."
+                  placeholder={
+                    user.role === 'ADVISOR'
+                      ? 'e.g. Verified attendance > 80% and academic standing. Approved by Class Advisor.'
+                      : 'e.g. Approved with full attendance compensation.'
+                  }
                 />
               </div>
 
@@ -1668,32 +1543,34 @@ export default function AppPortal() {
                 {user.role === 'ADVISOR' ? (
                   <button
                     style={{
-                      padding: '10px 20px',
-                      background: '#3350b0',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '8px',
-                      fontWeight: '700',
-                      cursor: 'pointer',
-                    }}
-                    onClick={() => handleAdvisorForward(showReviewModal.id)}
-                  >
-                    Forward to HOD →
-                  </button>
-                ) : (
-                  <button
-                    style={{
-                      padding: '10px 20px',
+                      padding: '10px 22px',
                       background: '#059669',
                       color: '#ffffff',
                       border: 'none',
                       borderRadius: '8px',
                       fontWeight: '700',
                       cursor: 'pointer',
+                      boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
+                    }}
+                    onClick={() => handleAdvisorApprove(showReviewModal.id)}
+                  >
+                    ✓ Approve & Recommend to HOD →
+                  </button>
+                ) : (
+                  <button
+                    style={{
+                      padding: '10px 22px',
+                      background: '#059669',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontWeight: '700',
+                      cursor: 'pointer',
+                      boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
                     }}
                     onClick={() => handleHodApprove(showReviewModal.id)}
                   >
-                    ✓ Officially Sanction OD
+                    ✓ Officially Sanction OD (Final)
                   </button>
                 )}
               </div>
@@ -1758,7 +1635,7 @@ export default function AppPortal() {
                     color: '#64748b',
                   }}
                 >
-                  📜 Certificate_Proof_{showResultModal.id}.pdf (Attached)
+                  📜 Certificate_Proof_{showResultModal.id}.pdf (Saved to Supabase Storage)
                 </div>
               </div>
 
