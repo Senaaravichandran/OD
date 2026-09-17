@@ -21,6 +21,22 @@ export default function AppPortal() {
   const [servicesStatus, setServicesStatus] = useState({ redis: true, supabase: true, resend: true, clerk: true });
   const [showNotifDrawer, setShowNotifDrawer] = useState(false);
 
+  // In-App Mobile Mode detection for Flutter Clerk WebView
+  const [isMobileMode, setIsMobileMode] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('mobile') === '1') {
+        setIsMobileMode(true);
+      }
+      const roleParam = params.get('role');
+      if (roleParam && ['STUDENT', 'ADVISOR', 'HOD'].includes(roleParam.toUpperCase())) {
+        setAuthRoleTab(roleParam.toUpperCase());
+      }
+    }
+  }, []);
+
   // Auth Form State (Only @smvec.ac.in permitted)
   const [authRoleTab, setAuthRoleTab] = useState('STUDENT'); // 'STUDENT' | 'ADVISOR' | 'HOD'
   const [authEmail, setAuthEmail] = useState('');
@@ -184,7 +200,7 @@ export default function AppPortal() {
       const rollMatch = primaryEmail.match(/\d+[a-zA-Z]+\d+/);
       const defaultRoll = rollMatch ? rollMatch[0].toUpperCase() : '21IT101';
 
-      setUser({
+      const authenticatedUser = {
         name: clerkUser.fullName || primaryEmail.split('@')[0].toUpperCase(),
         email: primaryEmail,
         role: role,
@@ -192,7 +208,16 @@ export default function AppPortal() {
         department: 'Information Technology',
         year: 3,
         section: 'A',
-      });
+      };
+      setUser(authenticatedUser);
+      if (typeof window !== 'undefined') {
+        window.__CLERK_USER__ = authenticatedUser;
+        if (window.ClerkMobileBridge) {
+          try {
+            window.ClerkMobileBridge.postMessage(JSON.stringify(authenticatedUser));
+          } catch (_) {}
+        }
+      }
       setAuthError('');
     }
   }, [clerkLoaded, clerkSignedIn, clerkUser, user, authRoleTab, clerk]);
@@ -420,37 +445,67 @@ export default function AppPortal() {
   };
 
   // -------------------------------------------------------------
-  // RENDER: LOGIN VIEW (IF UNAUTHENTICATED)
+  // RENDER: MOBILE SUCCESS OR LOGIN VIEW
   // -------------------------------------------------------------
+  if (isMobileMode && user) {
+    if (typeof window !== 'undefined') {
+      window.__CLERK_USER__ = user;
+      if (window.ClerkMobileBridge) {
+        try {
+          window.ClerkMobileBridge.postMessage(JSON.stringify(user));
+        } catch (_) {}
+      }
+    }
+    return (
+      <div style={{ padding: '40px 20px', textAlign: 'center', background: '#f8fafc', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>
+        <div style={{ fontSize: '3.5rem', marginBottom: '16px' }}>✅</div>
+        <h2 style={{ color: '#059669', fontSize: '1.4rem', fontWeight: '800', marginBottom: '8px' }}>
+          Authentication Successful!
+        </h2>
+        <p style={{ fontSize: '0.95rem', color: '#1e293b', fontWeight: '600', marginBottom: '4px' }}>
+          {user.name} ({user.email})
+        </p>
+        <p style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '20px' }}>
+          Role: <strong>{user.role}</strong> · SMVEC IT Department
+        </p>
+        <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '12px 20px', borderRadius: '8px', fontSize: '0.85rem', color: '#065f46', fontWeight: '600' }}>
+          Transferring session to SMVEC Mobile App...
+        </div>
+      </div>
+    );
+  }
+
   if (!user) {
     return (
       <div className={styles.appContainer}>
-        {/* Top Navbar */}
-        <header className={styles.topNav}>
-          <div className={styles.topNavInner}>
-            <Link href="/" className={styles.brandGroup}>
-              <img src="/college_logo.png" alt="SMVEC Logo" className={styles.brandLogo} />
-              <div className={styles.brandInfo}>
-                <span className={styles.brandTitle}>SMVEC ON-DUTY SYSTEM</span>
-                <span className={styles.brandSubtitle}>Department of Information Technology</span>
+        {/* Top Navbar (Hidden in Flutter In-App WebView) */}
+        {!isMobileMode && (
+          <>
+            <header className={styles.topNav}>
+              <div className={styles.topNavInner}>
+                <Link href="/" className={styles.brandGroup}>
+                  <img src="/college_logo.png" alt="SMVEC Logo" className={styles.brandLogo} />
+                  <div className={styles.brandInfo}>
+                    <span className={styles.brandTitle}>SMVEC ON-DUTY SYSTEM</span>
+                    <span className={styles.brandSubtitle}>Department of Information Technology</span>
+                  </div>
+                </Link>
+                <div className={styles.navActions}>
+                  <a href="/downloads/smvec-od.apk" download="smvec-od.apk" className={styles.navLinkBtn}>
+                    📱 Download Real APK (~45.7 MB)
+                  </a>
+                  <Link href="/" className={styles.navLinkBtn}>
+                    ← Back to Landing Page
+                  </Link>
+                </div>
               </div>
-            </Link>
-            <div className={styles.navActions}>
-              <a href="/downloads/smvec-od.apk" download="smvec-od.apk" className={styles.navLinkBtn}>
-                📱 Download Real APK (~45.7 MB)
-              </a>
-              <Link href="/" className={styles.navLinkBtn}>
-                ← Back to Landing Page
-              </Link>
+            </header>
+
+            <div style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '10px 24px', textAlign: 'center', fontSize: '0.8rem', color: '#475569' }}>
+              🔒 <strong>Institutional Security:</strong> Access is restricted strictly to verified <strong>@smvec.ac.in</strong> email accounts.
             </div>
-          </div>
-        </header>
-
-        {/* Institutional Domain Banner */}
-        <div style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '10px 24px', textAlign: 'center', fontSize: '0.8rem', color: '#475569' }}>
-          🔒 <strong>Institutional Security:</strong> Access is restricted strictly to verified <strong>@smvec.ac.in</strong> email accounts.
-        </div>
-
+          </>
+        )}
         {/* Login Container */}
         <div className={styles.authContainer}>
           <div className={styles.authCard} style={{ maxWidth: '460px', width: '100%' }}>
