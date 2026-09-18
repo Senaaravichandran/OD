@@ -157,59 +157,122 @@ export async function POST(req) {
       }
     }
 
+// Official SMVEC IT Class Advisor Roster
+const ADVISOR_ROSTER = [
+  // 1st Year
+  { year: 1, section: 'A', name: 'Padmapriya', email: 'padmapriya@smvec.ac.in' },
+  { year: 1, section: 'B', name: 'Periyasami', email: 'padmapriya@smvec.ac.in' },
+  { year: 1, section: 'C', name: 'Maheshwaran', email: 'maheshwaranit@smvec.ac.in' },
+  // 2nd Year
+  { year: 2, section: 'A', name: 'Vanaja', email: 'vanaja.it@smvec.ac.in' },
+  { year: 2, section: 'B', name: 'Pradheeshma', email: 'pradeesshma96@gmail.com' },
+  { year: 2, section: 'C', name: 'Valarmathi', email: 'valarmathie.it@smvec.ac.in' },
+  { year: 2, section: 'D', name: 'Keerthana', email: 'keerthanav.it@smvec.ac.in' },
+  // 3rd Year
+  { year: 3, section: 'A', name: 'Praveen Kumar', email: 'praveenkumarp.it@smvec.ac.in' },
+  { year: 3, section: 'B', name: 'Ranjeeth', email: 'ranjeeth.it@smvec.ac.in' },
+  { year: 3, section: 'C', name: 'Poornambigai', email: 'k.poornilashmi15@gmail.com' },
+  // 4th Year
+  { year: 4, section: 'A', name: 'D Prabhu', email: 'prabhu.it@smvec.ac.in' },
+  { year: 4, section: 'B', name: 'Vijayakumar', email: 'vijayakumarb.it@smvec.ac.in' },
+  { year: 4, section: 'C', name: 'Vijaya Prabhu', email: 'vijayprabhu.it@smvec.ac.in' },
+];
+
     // 1. LOGIN USER VIA INSTITUTIONAL CREDENTIALS
     if (action === 'LOGIN_USER') {
-      const { role, email, password, name, rollNumber, year, section } = payload;
+      const { role, email, password, name, rollNumber, year, section, isGoogleAuth } = payload;
       const cleanEmail = email ? email.trim().toLowerCase() : '';
-      if (!cleanEmail.endsWith('@smvec.ac.in')) {
-        return NextResponse.json({ success: false, error: 'Only official @smvec.ac.in email addresses are permitted.' }, { status: 400 });
-      }
-
       const roleKey = (role || '').toUpperCase();
 
       if (roleKey === 'STUDENT') {
+        if (cleanEmail && !cleanEmail.endsWith('@smvec.ac.in')) {
+          return NextResponse.json({ success: false, error: 'Only official @smvec.ac.in student email addresses are permitted.' }, { status: 400 });
+        }
         return NextResponse.json({
           success: true,
           user: {
-            name: name || cleanEmail.split('@')[0].toUpperCase(),
-            email: cleanEmail,
+            name: name || (cleanEmail ? cleanEmail.split('@')[0].toUpperCase() : 'Student'),
+            email: cleanEmail || `${(rollNumber || '21IT101').toLowerCase()}@smvec.ac.in`,
             role: 'STUDENT',
             rollNumber: rollNumber ? rollNumber.trim().toUpperCase() : '21IT101',
             department: 'Information Technology',
             year: Number(year) || 3,
-            section: section || 'A',
+            section: (section || 'A').toUpperCase(),
           },
         });
       }
 
       if (roleKey === 'ADVISOR' || roleKey === 'STAFF') {
-        const staffSecret = process.env.STAFF_PASSWORD;
-        if (!password || password.trim() !== staffSecret?.trim()) {
-          return NextResponse.json({ success: false, error: 'Invalid staff password. Click "Forgot Password?" to receive an OTP via Resend.' }, { status: 401 });
+        // If logging in via Google/Email authentication
+        if (isGoogleAuth || (!password && cleanEmail)) {
+          const matchedAdvisor = ADVISOR_ROSTER.find((adv) => adv.email.toLowerCase() === cleanEmail);
+          if (!matchedAdvisor) {
+            return NextResponse.json({
+              success: false,
+              error: `Access restricted: Email (${cleanEmail}) is not registered in the official Class Advisor roster.`,
+            }, { status: 403 });
+          }
+          return NextResponse.json({
+            success: true,
+            user: {
+              name: matchedAdvisor.name,
+              email: matchedAdvisor.email,
+              role: 'ADVISOR',
+              department: 'Information Technology',
+              year: matchedAdvisor.year,
+              section: matchedAdvisor.section,
+            },
+          });
         }
+
+        // Password Authentication (strictly validated from server environment)
+        const staffSecret = process.env.STAFF_PASSWORD;
+        if (!staffSecret || !password || password.trim() !== staffSecret.trim()) {
+          return NextResponse.json({ success: false, error: 'Invalid staff password. Please check your credentials.' }, { status: 401 });
+        }
+
+        // Find matching advisor from chosen year/section or name
+        let advisorProfile = ADVISOR_ROSTER.find(
+          (adv) => (Number(year) === adv.year && (section || '').toUpperCase() === adv.section) || (name && adv.name.toLowerCase() === name.toLowerCase())
+        );
+        if (!advisorProfile) {
+          advisorProfile = ADVISOR_ROSTER[0]; // fallback to first advisor
+        }
+
         return NextResponse.json({
           success: true,
           user: {
-            name: name || 'Class Advisor (IT-III-A)',
-            email: cleanEmail,
+            name: advisorProfile.name,
+            email: advisorProfile.email,
             role: 'ADVISOR',
             department: 'Information Technology',
-            year: 3,
-            section: 'A',
+            year: advisorProfile.year,
+            section: advisorProfile.section,
           },
         });
       }
 
       if (roleKey === 'HOD') {
-        const hodSecret = process.env.HOD_PASSWORD;
-        if (!password || password.trim() !== hodSecret?.trim()) {
-          return NextResponse.json({ success: false, error: 'Invalid HOD password. Click "Forgot Password?" to receive an OTP via Resend.' }, { status: 401 });
+        const hodEmail = (process.env.HOD_EMAIL || 'hodit@smvec.ac.in').toLowerCase().trim();
+        if (isGoogleAuth || (!password && cleanEmail)) {
+          if (cleanEmail !== hodEmail) {
+            return NextResponse.json({
+              success: false,
+              error: `Access restricted: Only official HOD email (${hodEmail}) is permitted.`,
+            }, { status: 403 });
+          }
+        } else {
+          const hodSecret = process.env.HOD_PASSWORD;
+          if (!hodSecret || !password || password.trim() !== hodSecret.trim()) {
+            return NextResponse.json({ success: false, error: 'Invalid HOD password. Please check your credentials.' }, { status: 401 });
+          }
         }
+
         return NextResponse.json({
           success: true,
           user: {
-            name: name || 'Dr. P. Sivakumar (HOD/IT)',
-            email: cleanEmail,
+            name: 'Dr. P. Sivakumar (HOD/IT)',
+            email: hodEmail,
             role: 'HOD',
             department: 'Information Technology',
           },
@@ -327,7 +390,7 @@ export async function POST(req) {
       });
       notifications.unshift({
         id: `N-${Date.now()}`,
-        title: 'New OD Submission 📋',
+        title: 'New OD Submission',
         text: `${payload.studentName} submitted OD for ${payload.eventName}. Class Advisor review required.`,
         time: 'Just now',
         role: 'ADVISOR',
@@ -362,7 +425,7 @@ export async function POST(req) {
 
       notifications.unshift({
         id: `N-${Date.now()}`,
-        title: 'Class Advisor Approved Your OD! ✅',
+        title: 'Class Advisor Approved Your OD',
         text: `Your OD request ${reqId} was APPROVED by Class Advisor. It is now forwarded to HOD for final sanction.`,
         time: 'Just now',
         role: 'STUDENT',
@@ -370,7 +433,7 @@ export async function POST(req) {
 
       notifications.unshift({
         id: `N-${Date.now() + 1}`,
-        title: 'Advisor-Approved Submission ⚡',
+        title: 'Advisor-Approved Submission',
         text: `Class Advisor approved ${reqId}. Awaiting HOD final sanction.`,
         time: 'Just now',
         role: 'HOD',
@@ -405,7 +468,7 @@ export async function POST(req) {
 
       notifications.unshift({
         id: `N-${Date.now()}`,
-        title: 'OD Not Approved by Advisor ⚠️',
+        title: 'OD Not Approved by Advisor',
         text: `Your OD request ${reqId} was not approved by Class Advisor. Reason: ${remarks}`,
         time: 'Just now',
         role: 'STUDENT',
@@ -415,6 +478,14 @@ export async function POST(req) {
     // 6. HOD APPROVE (CONFIRMATION MAIL TO STUDENT VIA RESEND ONLY IF ACCEPTED BY BOTH ADVISOR AND HOD)
     else if (action === 'HOD_APPROVE') {
       const { reqId, remarks, hodName } = payload;
+      const existingReq = requests.find((r) => r.id === reqId);
+      if (!existingReq || !existingReq.advisorApproved) {
+        return NextResponse.json({
+          success: false,
+          error: 'Class Advisor approval is required before HOD can grant final sanction.',
+        }, { status: 400 });
+      }
+
       let targetReq = null;
 
       requests = requests.map((r) => {
@@ -442,7 +513,7 @@ export async function POST(req) {
 
       notifications.unshift({
         id: `N-${Date.now()}`,
-        title: '🎉 OD Sanctioned by HOD!',
+        title: 'OD Sanctioned by HOD',
         text: `Your OD request ${reqId} has received official HOD approval. OD Slip is now valid!`,
         time: 'Just now',
         role: 'STUDENT',
