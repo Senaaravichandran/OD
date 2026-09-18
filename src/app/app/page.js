@@ -823,7 +823,7 @@ export default function AppPortal() {
                     type="button"
                     onClick={() => {
                       setUser({
-                        name: forgotRole === 'HOD' ? 'Dr. P. Sivakumar (HOD/IT)' : 'Class Advisor (IT-III-A)',
+                        name: forgotRole === 'HOD' ? 'Dr. R. RAJU (HOD/IT)' : 'Class Advisor (IT-III-A)',
                         email: forgotEmail,
                         role: forgotRole,
                         department: 'Information Technology',

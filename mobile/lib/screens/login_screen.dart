@@ -62,7 +62,7 @@ class _LoginScreenState extends State<LoginScreen> {
       case UserRole.hod:
         user = AppUser(
           id: 'U-HOD-1',
-          name: 'Dr. P. Sivakumar',
+          name: 'Dr. R. RAJU',
           email: _emailController.text,
           role: UserRole.hod,
           department: 'Information Technology',

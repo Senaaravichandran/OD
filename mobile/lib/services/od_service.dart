@@ -79,7 +79,7 @@ class ODService extends ChangeNotifier {
       advisorName: 'Dr. K. Senthil (Advisor IT-III-A)',
       advisorTimestamp: now.subtract(const Duration(days: 2)),
       hodRemarks: 'Approved for 3 days OD with travel allowance consideration. Best wishes for the team!',
-      hodName: 'Dr. P. Sivakumar (HOD/IT)',
+      hodName: 'Dr. R. RAJU (HOD/IT)',
       hodTimestamp: now.subtract(const Duration(days: 1)),
       attachmentName: 'SIH_Shortlist_Letter.pdf',
       createdAt: now.subtract(const Duration(days: 3)),
@@ -151,7 +151,7 @@ class ODService extends ChangeNotifier {
         id: 'AUD-3',
         requestId: 'OD-2026-001',
         action: 'APPROVED',
-        performedBy: 'Dr. P. Sivakumar',
+        performedBy: 'Dr. R. RAJU',
         role: 'HOD',
         details: 'HOD granted final OD approval with digital sign',
         timestamp: now.subtract(const Duration(days: 1)),
@@ -161,8 +161,8 @@ class ODService extends ChangeNotifier {
     _notifications.addAll([
       AppNotification(
         id: 'NOTIF-1',
-        title: 'OD Approved 🎉',
-        message: 'Your OD request for Smart India Hackathon has been APPROVED by HOD Dr. P. Sivakumar.',
+        title: 'OD Approved',
+        message: 'Your OD request for Smart India Hackathon has been APPROVED by HOD Dr. R. RAJU.',
         targetRole: 'STUDENT',
         targetRollNumber: '21IT101',
         timestamp: now.subtract(const Duration(days: 1)),

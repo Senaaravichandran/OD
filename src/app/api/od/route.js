@@ -271,7 +271,7 @@ const ADVISOR_ROSTER = [
         return NextResponse.json({
           success: true,
           user: {
-            name: 'Dr. P. Sivakumar (HOD/IT)',
+            name: 'Dr. R. RAJU (HOD/IT)',
             email: hodEmail,
             role: 'HOD',
             department: 'Information Technology',
@@ -494,7 +494,7 @@ const ADVISOR_ROSTER = [
             ...r,
             status: 'APPROVED', // Final OD Sanctioned
             hodRemarks: remarks || 'Officially sanctioned with full attendance regularisation.',
-            hodName: hodName || 'Dr. P. Sivakumar (HOD/IT)',
+            hodName: hodName || 'Dr. R. RAJU (HOD/IT)',
             hodTimestamp: timeStr,
           };
           return targetReq;
