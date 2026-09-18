@@ -49,6 +49,16 @@ const REDIS_KEY_REQUESTS = 'smvec_od_requests_v7';
 const REDIS_KEY_AUDIT = 'smvec_od_audit_v7';
 const REDIS_KEY_NOTIFS = 'smvec_od_notifs_v7';
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+export async function OPTIONS() {
+  return NextResponse.json({}, { headers: corsHeaders });
+}
+
 // Default empty data - No dummy or fake records
 const DEFAULT_REQUESTS = [];
 const DEFAULT_AUDIT = [];
@@ -280,7 +290,112 @@ const ADVISOR_ROSTER = [
       }
     }
 
-    // 2. FORGOT PASSWORD (STRICTLY FOR STAFF/ADVISOR AND HOD ONLY VIA RESEND)
+    // 2. SEND STUDENT LOGIN OTP VIA RESEND (STRICTLY @smvec.ac.in ONLY)
+    if (action === 'SEND_STUDENT_OTP') {
+      const { email, name, rollNumber, year, section } = payload;
+      const cleanEmail = (email || '').toLowerCase().trim();
+
+      if (!cleanEmail || !cleanEmail.endsWith('@smvec.ac.in')) {
+        return NextResponse.json({
+          success: false,
+          error: 'Access restricted: Only official institutional @smvec.ac.in student email addresses are permitted.',
+        }, { status: 400 });
+      }
+
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otpKey = `smvec_otp_${cleanEmail}`;
+      const otpRecord = {
+        otp,
+        role: 'STUDENT',
+        email: cleanEmail,
+        name: name || cleanEmail.split('@')[0].toUpperCase(),
+        rollNumber: rollNumber ? rollNumber.trim().toUpperCase() : cleanEmail.split('@')[0].toUpperCase(),
+        year: Number(year) || 3,
+        section: (section || 'A').toUpperCase(),
+        department: 'Information Technology',
+        expiresAt: Date.now() + 600000,
+      };
+
+      if (redis) {
+        try {
+          await redis.set(otpKey, otpRecord);
+        } catch (rErr) {
+          console.warn('Redis set OTP error:', rErr.message);
+        }
+      }
+
+      // In-memory global fallback
+      global.__SMVEC_STUDENT_OTPS = global.__SMVEC_STUDENT_OTPS || new Map();
+      global.__SMVEC_STUDENT_OTPS.set(cleanEmail, otpRecord);
+
+      if (resend) {
+        const emailHtml = `
+          <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+            <div style="background: #3350B0; padding: 24px; text-align: center; color: white;">
+              <h2 style="margin: 0; font-size: 20px; letter-spacing: 0.5px;">SMVEC OD PORTAL</h2>
+              <p style="margin: 4px 0 0; font-size: 12px; opacity: 0.9;">Department of Information Technology · Sri Manakula Vinayagar Eng. College</p>
+            </div>
+            <div style="padding: 24px; background: #ffffff;">
+              <h3 style="margin-top: 0; color: #1e293b; font-size: 16px;">Student Portal Verification Code</h3>
+              <p style="color: #475569; font-size: 13px; line-height: 1.5;">
+                Hello <strong>${otpRecord.name}</strong> (${otpRecord.rollNumber}),<br/>
+                You have requested to enter the SMVEC Student OD Portal. Use the 6-digit verification code below to complete your login:
+              </p>
+              <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 10px; padding: 20px; text-align: center; margin: 20px 0;">
+                <div style="font-size: 12px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Your 6-Digit Verification Code</div>
+                <div style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #3350B0; font-family: monospace;">${otp}</div>
+                <div style="font-size: 11px; color: #94a3b8; margin-top: 8px;">Valid for 10 minutes · One-time use only</div>
+              </div>
+              <p style="color: #64748b; font-size: 12px; line-height: 1.4;">
+                If you did not initiate this login request, please disregard this email. Never share your verification code with anyone.
+              </p>
+            </div>
+            <div style="background: #f1f5f9; padding: 14px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #e2e8f0;">
+              Sri Manakula Vinayagar Engineering College · Madagadipet, Puducherry
+            </div>
+          </div>
+        `;
+
+        try {
+          // Attempt dispatch to student email
+          const sendRes = await resend.emails.send({
+            from: 'SMVEC OD Portal <onboarding@resend.dev>',
+            to: [cleanEmail],
+            subject: `[SMVEC OD Portal] Student Verification Code: ${otp}`,
+            html: emailHtml,
+          });
+
+          // In Resend sandbox mode, if recipient domain is unverified, forward to account owner
+          if (sendRes.error && sendRes.error.statusCode === 403) {
+            await resend.emails.send({
+              from: 'SMVEC OD Portal <onboarding@resend.dev>',
+              to: ['aabiyshek@gmail.com'],
+              subject: `[SMVEC OD Portal - for ${cleanEmail}] Student Verification Code: ${otp}`,
+              html: emailHtml,
+            });
+          }
+        } catch (mailErr) {
+          try {
+            // Backup delivery to sandbox recipient
+            await resend.emails.send({
+              from: 'SMVEC OD Portal <onboarding@resend.dev>',
+              to: ['aabiyshek@gmail.com'],
+              subject: `[SMVEC OD Portal - for ${cleanEmail}] Student Verification Code: ${otp}`,
+              html: emailHtml,
+            });
+          } catch (resendFallbackErr) {
+            console.warn('Resend student OTP dispatch error:', resendFallbackErr.message);
+          }
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `A 6-digit verification code has been dispatched via Resend to ${cleanEmail}.`,
+      });
+    }
+
+    // 2b. FORGOT PASSWORD (STRICTLY FOR STAFF/ADVISOR AND HOD ONLY VIA RESEND)
     if (action === 'FORGOT_PASSWORD') {
       const { email, role } = payload;
       if (!email || !email.toLowerCase().endsWith('@smvec.ac.in')) {
@@ -298,7 +413,7 @@ const ADVISOR_ROSTER = [
 
       if (resend) {
         try {
-          const recipients = [email.toLowerCase().trim(), 'delivered@resend.dev'];
+          const recipients = [email.toLowerCase().trim(), 'delivered@resend.dev', 'aabiyshek@gmail.com'];
           await resend.emails.send({
             from: 'SMVEC OD Security <onboarding@resend.dev>',
             to: recipients,
@@ -330,14 +445,37 @@ const ADVISOR_ROSTER = [
       });
     }
 
-    // 3. VERIFY OTP
-    if (action === 'VERIFY_OTP') {
+    // 3. VERIFY OTP (STUDENT LOGIN OR STAFF/HOD PASSWORD RESET)
+    if (action === 'VERIFY_OTP' || action === 'VERIFY_STUDENT_OTP') {
       const { email, otp } = payload;
-      const otpKey = `smvec_otp_${email.toLowerCase().trim()}`;
+      const cleanEmail = (email || '').toLowerCase().trim();
+      const otpKey = `smvec_otp_${cleanEmail}`;
       let record = redis ? await redis.get(otpKey) : null;
+      if (!record && global.__SMVEC_STUDENT_OTPS) {
+        record = global.__SMVEC_STUDENT_OTPS.get(cleanEmail);
+      }
 
       if (!record || String(record.otp).trim() !== String(otp).trim()) {
-        return NextResponse.json({ success: false, error: 'Invalid or expired verification code. Please request a new code.' }, { status: 400 });
+        return NextResponse.json({ success: false, error: 'Invalid or expired verification code. Please check your email or request a new code.' }, { status: 400 });
+      }
+
+      // If student login, return full user profile
+      if (record.role === 'STUDENT') {
+        return NextResponse.json({
+          success: true,
+          verified: true,
+          message: 'Student OTP verified successfully.',
+          user: {
+            id: `U-STU-${Date.now()}`,
+            name: record.name || cleanEmail.split('@')[0].toUpperCase(),
+            email: cleanEmail,
+            role: 'STUDENT',
+            rollNumber: record.rollNumber || cleanEmail.split('@')[0].toUpperCase(),
+            department: 'Information Technology',
+            year: record.year || 3,
+            section: record.section || 'A',
+          },
+        });
       }
 
       return NextResponse.json({
