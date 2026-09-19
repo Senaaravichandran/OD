@@ -5,8 +5,11 @@ import 'screens/student_dashboard.dart';
 import 'screens/advisor_dashboard.dart';
 import 'screens/hod_dashboard.dart';
 import 'screens/notifications_sheet.dart';
+import 'services/od_service.dart';
+import 'services/session_service.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const SMVECODApp());
 }
 
@@ -18,23 +21,59 @@ class SMVECODApp extends StatefulWidget {
 }
 
 class _SMVECODAppState extends State<SMVECODApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
   AppUser? _currentUser;
+  bool _restoring = true;
 
-  void _onLogin(AppUser user) {
-    setState(() {
-      _currentUser = user;
-    });
+  @override
+  void initState() {
+    super.initState();
+    ODService().onSessionExpired = _onSessionExpired;
+    _restoreSession();
   }
 
-  void _onLogout() {
+  Future<void> _restoreSession() async {
+    final user = await SessionService.loadUser();
+    if (!mounted) return;
     setState(() {
-      _currentUser = null;
+      _currentUser = user;
+      _restoring = false;
     });
+    ODService().setUser(user);
+  }
+
+  Future<void> _onLogin(AppUser user) async {
+    await SessionService.saveUser(user);
+    ODService().setUser(user);
+    if (mounted) setState(() => _currentUser = user);
+  }
+
+  Future<void> _onUserUpdated(AppUser user) async {
+    await SessionService.saveUser(user);
+    if (mounted) setState(() => _currentUser = user);
+  }
+
+  Future<void> _onLogout() async {
+    await SessionService.clear();
+    ODService().setUser(null);
+    if (mounted) setState(() => _currentUser = null);
+  }
+
+  void _onSessionExpired() {
+    if (_currentUser == null) return;
+    _onLogout();
+    final ctx = _navigatorKey.currentContext;
+    if (ctx != null) {
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        const SnackBar(content: Text('Your session has expired. Please log in again.')),
+      );
+    }
   }
 
   void _showNotifications(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => const NotificationsSheet(),
     );
@@ -47,6 +86,7 @@ class _SMVECODAppState extends State<SMVECODApp> {
 
     return MaterialApp(
       title: 'SMVEC OD Management',
+      navigatorKey: _navigatorKey,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -60,26 +100,31 @@ class _SMVECODAppState extends State<SMVECODApp> {
       ),
       home: Builder(
         builder: (context) {
-          if (_currentUser == null) {
+          if (_restoring) {
+            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          }
+          final user = _currentUser;
+          if (user == null) {
             return LoginScreen(onLogin: _onLogin);
           }
 
-          switch (_currentUser!.role) {
+          switch (user.role) {
             case UserRole.student:
               return StudentDashboard(
-                user: _currentUser!,
+                user: user,
                 onLogout: _onLogout,
                 onOpenNotifications: () => _showNotifications(context),
               );
             case UserRole.advisor:
               return AdvisorDashboard(
-                user: _currentUser!,
+                user: user,
                 onLogout: _onLogout,
+                onUserUpdated: _onUserUpdated,
                 onOpenNotifications: () => _showNotifications(context),
               );
             case UserRole.hod:
               return HodDashboard(
-                user: _currentUser!,
+                user: user,
                 onLogout: _onLogout,
                 onOpenNotifications: () => _showNotifications(context),
               );

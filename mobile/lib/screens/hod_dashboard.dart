@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/od_request.dart';
 import '../models/user.dart';
+import '../services/api_client.dart';
 import '../services/od_service.dart';
+import '../utils/validators.dart';
 
 class HodDashboard extends StatefulWidget {
   final AppUser user;
@@ -43,118 +45,31 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
   }
 
   void _openApprovalDialog(ODRequest req) {
-    final remarksController = TextEditingController(text: 'Approved. OD granted with attendance compensation.');
-
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.verified, color: Color(0xFF059669)),
-            SizedBox(width: 8),
-            Text('Final OD Sanction', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Student: ${req.studentName} (${req.rollNumber})', style: const TextStyle(fontWeight: FontWeight.bold)),
-              Text('Event: ${req.eventName}', style: const TextStyle(fontSize: 13, color: Color(0xFF3350B0))),
-              Text('Category: ${req.eventType} · Date: ${DateFormat('dd MMM yyyy').format(req.eventDate)}', style: const TextStyle(fontSize: 12)),
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: const Color(0xFFEFF6FF), borderRadius: BorderRadius.circular(6)),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Class Advisor Recommendation:', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1E40AF))),
-                    Text('${req.advisorRemarks ?? "Recommended"} (${req.advisorName ?? "Advisor"})', style: const TextStyle(fontSize: 11, color: Color(0xFF1E3A8A))),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-              const Text('HOD Sanction Remarks:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: remarksController,
-                maxLines: 2,
-                decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Enter approval comments...'),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          TextButton(
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            onPressed: () {
-              _odService.rejectByHod(req.id, remarksController.text, widget.user.name);
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('OD Request rejected.')));
-            },
-            child: const Text('Reject'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF059669), foregroundColor: Colors.white),
-            onPressed: () {
-              _odService.approveByHod(req.id, remarksController.text, widget.user.name);
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('🎉 OD officially sanctioned! Student and college records updated.'),
-                  backgroundColor: Color(0xFF059669),
-                ),
-              );
-            },
-            child: const Text('Approve OD'),
-          ),
-        ],
-      ),
+      builder: (ctx) => _HodDecisionDialog(request: req, odService: _odService),
     );
   }
 
-  void _exportReportDialog() {
+  void _showSummaryDialog() {
+    final all = _odService.allRequests;
+    int count(bool Function(ODRequest) test) => all.where(test).length;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.download, color: Color(0xFF3350B0)),
-            SizedBox(width: 8),
-            Text('Export OD Report', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          ],
-        ),
+        title: const Text('OD Summary', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text('Generate official department event OD records with college letterhead:'),
-            SizedBox(height: 12),
-            Text('• Department: Information Technology'),
-            Text('• Total Records: Filtered by academic term'),
-            Text('• File Formats: Excel (.xlsx), CSV, Print-Ready PDF'),
+          children: [
+            Text('Total requests: ${all.length}'),
+            Text('Waiting for advisor: ${count((r) => r.isPendingAdvisor)}'),
+            Text('Waiting for HOD: ${count((r) => r.isPendingHod)}'),
+            Text('Approved: ${count((r) => r.isApproved)}'),
+            Text('Rejected: ${count((r) => r.isRejected)}'),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3350B0), foregroundColor: Colors.white),
-            icon: const Icon(Icons.file_download, size: 16),
-            label: const Text('Export Excel/CSV'),
-            onPressed: () {
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Report generated successfully with college seal.'),
-                  backgroundColor: Color(0xFF059669),
-                ),
-              );
-            },
-          ),
-        ],
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
       ),
     );
   }
@@ -165,8 +80,8 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
     const goldAccent = Color(0xFFD4A429);
 
     final all = _odService.allRequests;
-    final forwardedToHod = all.where((r) => r.status == 'FORWARDED_HOD').toList();
-    final approved = all.where((r) => r.status == 'APPROVED').toList();
+    final forwardedToHod = all.where((r) => r.isPendingHod).toList();
+    final approved = all.where((r) => r.isApproved).toList();
     final auditLogs = _odService.allAuditLogs;
 
     return Scaffold(
@@ -194,9 +109,14 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.download_for_offline_outlined, color: Colors.white),
-            tooltip: 'Export Report',
-            onPressed: _exportReportDialog,
+            icon: const Icon(Icons.insights_outlined, color: Colors.white),
+            tooltip: 'Summary',
+            onPressed: _showSummaryDialog,
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Colors.white),
+            tooltip: 'Refresh',
+            onPressed: _odService.refresh,
           ),
           IconButton(
             icon: const Icon(Icons.notifications_none_outlined, color: Colors.white),
@@ -236,22 +156,28 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
 
   Widget _buildPendingTab(List<ODRequest> list, Color primaryBlue, Color goldAccent) {
     if (list.isEmpty) {
+      if (_odService.isLoading) return const Center(child: CircularProgressIndicator());
       return Container(
         padding: const EdgeInsets.all(40),
         alignment: Alignment.center,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
-            Icon(Icons.check_circle_outline, size: 56, color: Color(0xFF10B981)),
-            SizedBox(height: 12),
-            Text('All caught up!', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            Text('No requests currently waiting for HOD final sanction.', style: TextStyle(fontSize: 12, color: Color(0xFF6B7280))),
+          children: [
+            if (_odService.lastError != null)
+              Text(_odService.lastError!, style: const TextStyle(fontSize: 12, color: Color(0xFFB91C1C))),
+            const Icon(Icons.check_circle_outline, size: 56, color: Color(0xFF10B981)),
+            const SizedBox(height: 12),
+            const Text('All caught up!', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const Text('No requests currently waiting for HOD final sanction.', style: TextStyle(fontSize: 12, color: Color(0xFF6B7280))),
           ],
         ),
       );
     }
 
-    return ListView.builder(
+    return RefreshIndicator(
+      onRefresh: _odService.refresh,
+      child: ListView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16),
       itemCount: list.length,
       itemBuilder: (ctx, i) {
@@ -263,7 +189,7 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: const Color(0xFF2563EB), width: 1.5),
             boxShadow: [
-              BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 4)),
+              BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 4)),
             ],
           ),
           child: Padding(
@@ -277,14 +203,14 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(color: const Color(0xFFEFF6FF), borderRadius: BorderRadius.circular(6)),
-                      child: const Text('Forwarded by Class Advisor', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
+                      child: Text('Approved by ${req.advisorName}', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8))),
                     ),
                     Text(req.id, style: const TextStyle(fontSize: 11, color: Color(0xFF9CA3AF), fontWeight: FontWeight.w600)),
                   ],
                 ),
                 const SizedBox(height: 10),
                 Text(req.studentName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF111827))),
-                Text('Roll: ${req.rollNumber} · Year ${req.year} - Sec ${req.section}', style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280))),
+                Text('Reg No: ${req.rollNumber} · ${yearLabel(req.year)} - Sec ${req.section}', style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280))),
                 const Divider(height: 20),
                 Text(req.eventName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Color(0xFF1E293B))),
                 const SizedBox(height: 4),
@@ -304,7 +230,7 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Advisor Note: "${req.advisorRemarks ?? "Recommended for approval"}"',
+                          '${req.advisorName}: "${req.advisorRemarks ?? "Recommended for approval"}"',
                           style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF166534)),
                         ),
                       ),
@@ -323,7 +249,7 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF059669), foregroundColor: Colors.white),
                       icon: const Icon(Icons.verified, size: 16),
-                      label: const Text('Sanction OD'),
+                      label: const Text('Decide'),
                       onPressed: () => _openApprovalDialog(req),
                     ),
                   ],
@@ -333,6 +259,7 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
           ),
         );
       },
+      ),
     );
   }
 
@@ -369,7 +296,7 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
                     ),
                   ],
                 ),
-                Text('Roll: ${req.rollNumber} · Event: ${req.eventName}', style: const TextStyle(fontSize: 12, color: Color(0xFF4B5563))),
+                Text('Reg No: ${req.rollNumber} · ${yearLabel(req.year)} ${req.section} · Event: ${req.eventName}', style: const TextStyle(fontSize: 12, color: Color(0xFF4B5563))),
                 const SizedBox(height: 6),
                 Text('Date: ${DateFormat('dd MMM yyyy').format(req.eventDate)} · ${req.eventType}', style: const TextStyle(fontSize: 11, color: Color(0xFF6B7280))),
                 if (req.resultStatus != 'PENDING') ...[
@@ -408,7 +335,7 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
           case 'CREATED':
             actionColor = const Color(0xFF2563EB);
             break;
-          case 'FORWARDED':
+          case 'APPROVED_BY_ADVISOR':
             actionColor = const Color(0xFFD97706);
             break;
           case 'APPROVED':
@@ -475,6 +402,108 @@ class _HodDashboardState extends State<HodDashboard> with SingleTickerProviderSt
           ),
         );
       },
+    );
+  }
+}
+
+class _HodDecisionDialog extends StatefulWidget {
+  final ODRequest request;
+  final ODService odService;
+
+  const _HodDecisionDialog({required this.request, required this.odService});
+
+  @override
+  State<_HodDecisionDialog> createState() => _HodDecisionDialogState();
+}
+
+class _HodDecisionDialogState extends State<_HodDecisionDialog> {
+  final _remarksController = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _remarksController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _decide(bool approve) async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      await widget.odService.hodDecide(widget.request.id, approve: approve, remarks: _remarksController.text.trim());
+      if (!mounted) return;
+      Navigator.pop(context);
+      messenger.showSnackBar(SnackBar(
+        content: Text(approve ? 'OD sanctioned. The student has been notified.' : 'OD request rejected.'),
+        backgroundColor: approve ? const Color(0xFF059669) : null,
+      ));
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      messenger.showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final req = widget.request;
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.verified, color: Color(0xFF059669)),
+          SizedBox(width: 8),
+          Text('Final OD Sanction', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Student: ${req.studentName} (${req.rollNumber})', style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text('${yearLabel(req.year)} - Sec ${req.section}', style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280))),
+            Text('Event: ${req.eventName}', style: const TextStyle(fontSize: 13, color: Color(0xFF3350B0))),
+            Text('Category: ${req.eventType} · Date: ${DateFormat('dd MMM yyyy').format(req.eventDate)}', style: const TextStyle(fontSize: 12)),
+            const SizedBox(height: 6),
+            Text(req.description, style: const TextStyle(fontSize: 12, color: Color(0xFF374151))),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(color: const Color(0xFFEFF6FF), borderRadius: BorderRadius.circular(6)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Class Advisor Recommendation:', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1E40AF))),
+                  Text('${req.advisorRemarks ?? "Recommended"} (${req.advisorName})', style: const TextStyle(fontSize: 11, color: Color(0xFF1E3A8A))),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text('HOD Remarks (optional):', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _remarksController,
+              maxLines: 2,
+              decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Enter comments...'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: _busy ? null : () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(
+          style: TextButton.styleFrom(foregroundColor: Colors.red),
+          onPressed: _busy ? null : () => _decide(false),
+          child: const Text('Reject'),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF059669), foregroundColor: Colors.white),
+          onPressed: _busy ? null : () => _decide(true),
+          child: _busy
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Text('Approve OD'),
+        ),
+      ],
     );
   }
 }

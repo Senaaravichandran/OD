@@ -11,6 +11,7 @@ class NotificationsSheet extends StatelessWidget {
     final notifications = ODService().allNotifications;
 
     return Container(
+      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.75),
       padding: const EdgeInsets.all(20),
       decoration: const BoxDecoration(
         color: Colors.white,
@@ -40,7 +41,10 @@ class NotificationsSheet extends StatelessWidget {
               child: Center(child: Text('No notifications yet.')),
             )
           else
-            ...notifications.map((n) {
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: notifications.map((n) {
               return Container(
                 margin: const EdgeInsets.only(bottom: 10),
                 padding: const EdgeInsets.all(12),
@@ -55,9 +59,11 @@ class NotificationsSheet extends StatelessWidget {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(n.title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
+                        Expanded(
+                          child: Text(n.title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B))),
+                        ),
                         Text(
-                          DateFormat('hh:mm a').format(n.timestamp),
+                          DateFormat('dd MMM, hh:mm a').format(n.timestamp),
                           style: const TextStyle(fontSize: 10, color: Color(0xFF9CA3AF)),
                         ),
                       ],
@@ -67,7 +73,9 @@ class NotificationsSheet extends StatelessWidget {
                   ],
                 ),
               );
-            }),
+            }).toList(),
+              ),
+            ),
         ],
       ),
     );

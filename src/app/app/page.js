@@ -1,1949 +1,1161 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+// Web portal for the SMVEC OD system. It talks to the same /api/mobile backend
+// as the Flutter app, so logins and OD data are shared between web and mobile.
+
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { useClerk, useUser, useSignIn } from '@clerk/nextjs';
 import styles from './app.module.css';
 
-export default function AppPortal() {
-  const clerk = useClerk();
-  const { isLoaded: clerkLoaded, isSignedIn: clerkSignedIn, user: clerkUser } = useUser();
-  const { isLoaded: signInLoaded, signIn } = useSignIn();
+const API = '/api/mobile';
+const SESSION_KEY = 'smvec_od_session_v1';
+const DOMAIN = '@smvec.ac.in';
+const YEARS = [1, 2, 3, 4];
+const SECTIONS = ['A', 'B', 'C', 'D', 'E', 'F'];
+const EVENT_TYPES = ['Hackathon', 'Internship', 'Paper Presentation', 'Workshop', 'Symposium', 'Sports', 'Other'];
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-  // Current Authenticated User State: { name, email, role: 'STUDENT' | 'ADVISOR' | 'HOD', rollNumber, year, section }
-  const [user, setUser] = useState(null);
+const STATUS = {
+  PENDING_ADVISOR: { label: 'Pending advisor', tone: 'pending' },
+  APPROVED_BY_ADVISOR: { label: 'Awaiting HOD', tone: 'forwarded' },
+  REJECTED_ADVISOR: { label: 'Rejected by advisor', tone: 'rejected' },
+  APPROVED: { label: 'Approved', tone: 'approved' },
+  REJECTED_HOD: { label: 'Rejected by HOD', tone: 'rejected' },
+};
 
-  // Live State from Upstash Redis
-  const [requests, setRequests] = useState([]);
-  const [auditLogs, setAuditLogs] = useState([]);
-  const [notifications, setNotifications] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [servicesStatus, setServicesStatus] = useState({ redis: true, supabase: true, resend: true, clerk: true });
-  const [showNotifDrawer, setShowNotifDrawer] = useState(false);
-
-  // In-App Mobile Mode detection for Flutter Clerk WebView
-  const [isMobileMode, setIsMobileMode] = useState(false);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get('mobile') === '1') {
-        setIsMobileMode(true);
-      }
-      const roleParam = params.get('role');
-      if (roleParam && ['STUDENT', 'ADVISOR', 'HOD'].includes(roleParam.toUpperCase())) {
-        setAuthRoleTab(roleParam.toUpperCase());
-      }
-    }
-  }, []);
-
-  // Auth Form State (Only @smvec.ac.in permitted)
-  const [authRoleTab, setAuthRoleTab] = useState('STUDENT'); // 'STUDENT' | 'ADVISOR' | 'HOD'
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authName, setAuthName] = useState('');
-  const [authRoll, setAuthRoll] = useState('');
-  const [authYear, setAuthYear] = useState('3');
-  const [authSection, setAuthSection] = useState('A');
-  const [authError, setAuthError] = useState('');
-  const [authSuccess, setAuthSuccess] = useState('');
-
-  // Forgot Password Modal State (Strictly for Staff/Advisor & HOD via Resend)
-  const [showForgotModal, setShowForgotModal] = useState(false);
-  const [forgotRole, setForgotRole] = useState('ADVISOR');
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotOtp, setForgotOtp] = useState('');
-  const [forgotStep, setForgotStep] = useState(1); // 1 = Enter email, 2 = Enter OTP, 3 = Verified
-  const [forgotLoading, setForgotLoading] = useState(false);
-  const [forgotError, setForgotError] = useState('');
-
-  // Modals & Navigation
-  const [showNewODModal, setShowNewODModal] = useState(false);
-  const [showReviewModal, setShowReviewModal] = useState(null); // request to review
-  const [showResultModal, setShowResultModal] = useState(null); // request to add result
-  const [advisorFilter, setAdvisorFilter] = useState('ALL'); // 'ALL' | 'PENDING' | 'APPROVED_BY_ME' | 'REJECTED'
-  const [hodTab, setHodTab] = useState('PENDING'); // 'PENDING' | 'APPROVED' | 'AUDIT'
-
-  // New OD Form State (Clean inputs - NO watermark)
-  const [formData, setFormData] = useState({
-    submissionType: 'SOLO',
-    eventType: 'Hackathon',
-    eventName: '',
-    eventDate: '',
-    eventDay: '',
-    description: '',
-    teamMembers: [],
-  });
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [formError, setFormError] = useState('');
-
-  // Review Remarks
-  const [reviewRemarks, setReviewRemarks] = useState('');
-
-  // Result Form State
-  const [resultData, setResultData] = useState({
-    status: 'WON',
-    projectName: '',
-    description: '',
-  });
-  const [resultFile, setResultFile] = useState(null);
-
-  // Fetch live state on mount
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch('/api/od');
-      const json = await res.json();
-      if (json.success && json.data) {
-        setRequests(json.data.requests || []);
-        setAuditLogs(json.data.auditLogs || []);
-        setNotifications(json.data.notifications || []);
-        if (json.connectedServices) {
-          setServicesStatus(json.connectedServices);
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load live data:', e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const callApi = async (action, payload) => {
-    try {
-      const res = await fetch('/api/od', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, payload }),
-      });
-      const json = await res.json();
-      if (json.success && json.data) {
-        setRequests(json.data.requests);
-        setAuditLogs(json.data.auditLogs);
-        setNotifications(json.data.notifications);
-      }
-      return json;
-    } catch (e) {
-      console.error('API call failed:', e);
-      return { success: false, error: e.message };
-    }
-  };
-
-  // Calculate day of week on date change
-  const handleDateChange = (e) => {
-    const val = e.target.value;
-    if (!val) {
-      setFormData({ ...formData, eventDate: '', eventDay: '' });
-      return;
-    }
-    const d = new Date(val);
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    setFormData({
-      ...formData,
-      eventDate: val,
-      eventDay: days[d.getDay()] || '',
+async function api(action, payload = {}, token) {
+  let res;
+  try {
+    res = await fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ action, payload }),
     });
+  } catch {
+    throw Object.assign(new Error('Could not reach the server. Check your connection.'), { status: 0 });
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw Object.assign(new Error(`Unexpected server response (${res.status}).`), { status: res.status });
+  }
+  if (!res.ok || data.success !== true) {
+    throw Object.assign(new Error(data.error || 'Something went wrong.'), { status: res.status });
+  }
+  return data;
+}
+
+// The session lives in localStorage and is read through useSyncExternalStore,
+// so sign-in / sign-out also stays in sync across open tabs.
+const sessionListeners = new Set();
+
+function subscribeSession(cb) {
+  sessionListeners.add(cb);
+  window.addEventListener('storage', cb);
+  return () => {
+    sessionListeners.delete(cb);
+    window.removeEventListener('storage', cb);
   };
+}
 
-  // -------------------------------------------------------------
-  // AUTHENTICATION LOGIC (STRICT @smvec.ac.in ONLY)
-  // -------------------------------------------------------------
-  const validateSmvecDomain = (email) => {
-    return email && email.trim().toLowerCase().endsWith('@smvec.ac.in');
-  };
+function readSessionRaw() {
+  try {
+    return localStorage.getItem(SESSION_KEY);
+  } catch {
+    return null;
+  }
+}
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setAuthError('');
-    setAuthSuccess('');
+function parseSession(raw) {
+  try {
+    const s = JSON.parse(raw || 'null');
+    return s && s.token && s.user ? s : null;
+  } catch {
+    return null;
+  }
+}
 
-    const cleanEmail = authEmail.trim().toLowerCase();
+function saveSession(s) {
+  try {
+    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+    else localStorage.removeItem(SESSION_KEY);
+  } catch {}
+  sessionListeners.forEach((cb) => cb());
+}
 
-    // 1. Mandatory @smvec.ac.in check
-    if (!validateSmvecDomain(cleanEmail)) {
-      setAuthError('Access Denied: Only official college email addresses ending in @smvec.ac.in are permitted.');
-      return;
-    }
+function roleFromUrl() {
+  const r = new URLSearchParams(window.location.search).get('role')?.toUpperCase();
+  if (r === 'STAFF' || r === 'ADVISOR') return 'STAFF';
+  return r === 'HOD' ? 'HOD' : 'STUDENT';
+}
 
-    const res = await callApi('LOGIN_USER', {
-      role: authRoleTab,
-      email: cleanEmail,
-      password: authPassword,
-      name: authName.trim(),
-      rollNumber: authRoll.trim().toUpperCase(),
-      year: Number(authYear),
-      section: authSection,
-    });
+function currentBatch() {
+  const y = new Date().getFullYear();
+  return `${y - 1}-${y + 3}`;
+}
 
-    if (res.success && res.user) {
-      setUser(res.user);
-    } else {
-      setAuthError(res.error || 'Authentication failed. Please verify your credentials.');
-    }
-  };
+const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
+const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 
-  // Clerk Google Workspace Auth Synchronization (@smvec.ac.in enforced)
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+
+export default function PortalPage() {
+  // undefined during server render / before hydration, then the stored string.
+  const raw = useSyncExternalStore(subscribeSession, readSessionRaw, () => undefined);
+  const session = useMemo(() => parseSession(raw), [raw]);
+
+  const onLogin = useCallback((s) => saveSession(s), []);
+  const onLogout = useCallback(() => saveSession(null), []);
+  const onUserUpdate = (user) => saveSession({ ...session, user });
+
+  if (raw === undefined) return <div className={styles.appContainer} />;
+  if (!session) return <LoginView onLogin={onLogin} />;
+  return <Dashboard session={session} onLogout={onLogout} onUserUpdate={onUserUpdate} />;
+}
+
+// ---------------------------------------------------------------------------
+// Login + registration
+// ---------------------------------------------------------------------------
+
+function LoginView({ onLogin }) {
+  // Only rendered on the client (see PortalPage), so reading the URL here is safe.
+  const [role, setRole] = useState(roleFromUrl);
+  // step: form | otp | register
+  const [step, setStep] = useState('form');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [otp, setOtp] = useState('');
+  const [regToken, setRegToken] = useState('');
+  const [reg, setReg] = useState({ name: '', rollNumber: '', year: '', section: '', batch: currentBatch() });
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
+
   useEffect(() => {
-    if (clerkLoaded && clerkSignedIn && clerkUser && !user) {
-      const primaryEmail = clerkUser.primaryEmailAddress?.emailAddress?.toLowerCase() || '';
-      if (!validateSmvecDomain(primaryEmail)) {
-        setAuthError(`Access Denied: Google account (${primaryEmail}) is not an @smvec.ac.in institutional account. Please sign out and use your official college Google account.`);
-        if (clerk?.signOut) clerk.signOut();
-        return;
-      }
+    if (resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendIn]);
 
-      const role = (authRoleTab || 'STUDENT').toUpperCase();
-      const rollMatch = primaryEmail.match(/\d+[a-zA-Z]+\d+/);
-      const defaultRoll = rollMatch ? rollMatch[0].toUpperCase() : '21IT101';
+  const switchRole = (r) => {
+    setRole(r);
+    setStep('form');
+    setPassword('');
+    setOtp('');
+    setError('');
+    setInfo('');
+  };
 
-      const authenticatedUser = {
-        name: clerkUser.fullName || primaryEmail.split('@')[0].toUpperCase(),
-        email: primaryEmail,
-        role: role,
-        rollNumber: defaultRoll,
-        department: 'Information Technology',
-        year: 3,
-        section: 'A',
-      };
-      setUser(authenticatedUser);
-      if (typeof window !== 'undefined') {
-        window.__CLERK_USER__ = authenticatedUser;
-        if (window.ClerkMobileBridge) {
-          try {
-            window.ClerkMobileBridge.postMessage(JSON.stringify(authenticatedUser));
-          } catch (_) {}
-        }
-      }
-      setAuthError('');
-    }
-  }, [clerkLoaded, clerkSignedIn, clerkUser, user, authRoleTab, clerk]);
+  const normEmail = () => {
+    const e = email.trim().toLowerCase();
+    if (!e.endsWith(DOMAIN) || e.length <= DOMAIN.length) throw new Error(`Use your official ${DOMAIN} email address.`);
+    return e;
+  };
 
-  // Real Clerk Google Sign-In
-  const handleGoogleSignIn = async () => {
-    setAuthError('');
+  const run = async (fn) => {
+    setError('');
+    setBusy(true);
     try {
-      if (signIn) {
-        await signIn.authenticateWithRedirect({
-          strategy: 'oauth_google',
-          redirectUrl: '/sso-callback',
-          redirectUrlComplete: '/app',
-        });
-        return;
-      }
-      if (clerk?.openSignIn) {
-        clerk.openSignIn();
-        return;
-      }
+      await fn();
     } catch (err) {
-      console.error('Clerk Google Auth error:', err);
-      if (clerk?.openSignIn) {
-        clerk.openSignIn();
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitLogin = (ev) => {
+    ev.preventDefault();
+    run(async () => {
+      const e = normEmail();
+      const payload = { role, email: e };
+      if (role !== 'STUDENT') payload.password = password;
+      const res = await api('LOGIN', payload);
+      if (res.otpSent) {
+        setStep('otp');
+        setOtp('');
+        setResendIn(res.resendAfter || 60);
+        setInfo(`We sent a 6-digit code to ${e}.`);
+      } else if (res.needsRegistration) {
+        setStep('register');
+        setInfo('First time here? Set up your class details to continue.');
       } else {
-        setAuthError(err.message || 'Google Authentication failed. Please try again.');
+        onLogin({ token: res.token, user: res.user });
       }
-    }
-  };
-
-  // -------------------------------------------------------------
-  // FORGOT PASSWORD (STRICTLY FOR STAFF & HOD VIA RESEND)
-  // -------------------------------------------------------------
-  const handleRequestForgotOtp = async (e) => {
-    e.preventDefault();
-    setForgotError('');
-    if (!validateSmvecDomain(forgotEmail)) {
-      setForgotError('Please enter a valid @smvec.ac.in email address.');
-      return;
-    }
-
-    setForgotLoading(true);
-    const res = await callApi('FORGOT_PASSWORD', {
-      email: forgotEmail.trim().toLowerCase(),
-      role: forgotRole,
-    });
-    setForgotLoading(false);
-
-    if (res.success) {
-      setForgotStep(2);
-    } else {
-      setForgotError(res.error || 'Failed to dispatch verification email. Please try again.');
-    }
-  };
-
-  const handleVerifyForgotOtp = async (e) => {
-    e.preventDefault();
-    setForgotError('');
-    if (!forgotOtp.trim()) {
-      setForgotError('Please enter the 6-digit verification code.');
-      return;
-    }
-
-    setForgotLoading(true);
-    const res = await callApi('VERIFY_OTP', {
-      email: forgotEmail.trim().toLowerCase(),
-      otp: forgotOtp.trim(),
-    });
-    setForgotLoading(false);
-
-    if (res.success) {
-      setForgotStep(3);
-    } else {
-      setForgotError(res.error || 'Invalid verification code.');
-    }
-  };
-
-  // -------------------------------------------------------------
-  // SUBMIT NEW OD (STUDENT)
-  // -------------------------------------------------------------
-  const handleCreateOD = async (e) => {
-    e.preventDefault();
-    setFormError('');
-
-    if (!formData.eventName.trim()) {
-      setFormError('Please enter the event name.');
-      return;
-    }
-    if (!formData.eventDate) {
-      setFormError('Please select the event date.');
-      return;
-    }
-    if (!formData.description.trim()) {
-      setFormError('Please provide a description of the OD purpose.');
-      return;
-    }
-
-    const docName = selectedFile ? selectedFile.name : 'Event_Invitation_Letter.pdf';
-
-    await callApi('CREATE_OD', {
-      studentName: user.name,
-      studentEmail: user.email,
-      rollNumber: user.rollNumber,
-      department: user.department,
-      year: user.year,
-      section: user.section,
-      submissionType: formData.submissionType,
-      teamMembers: formData.submissionType === 'TEAM' ? formData.teamMembers : [],
-      eventType: formData.eventType,
-      eventName: formData.eventName.trim(),
-      eventDate: formData.eventDate,
-      eventDay: formData.eventDay,
-      description: formData.description.trim(),
-      attachmentName: docName,
-    });
-
-    setShowNewODModal(false);
-    setSelectedFile(null);
-    setFormData({
-      submissionType: 'SOLO',
-      eventType: 'Hackathon',
-      eventName: '',
-      eventDate: '',
-      eventDay: '',
-      description: '',
-      teamMembers: [],
     });
   };
 
-  // -------------------------------------------------------------
-  // ADVISOR APPROVE / REJECT
-  // -------------------------------------------------------------
-  const handleAdvisorApprove = async (reqId) => {
-    const remarks = reviewRemarks.trim() || 'Verified student eligibility and academic attendance. Approved and recommended for HOD sanction.';
-    await callApi('ADVISOR_APPROVE', {
-      reqId,
-      remarks,
-      advisorName: user.name,
-    });
-    setShowReviewModal(null);
-    setReviewRemarks('');
-  };
-
-  const handleAdvisorReject = async (reqId) => {
-    const remarks = reviewRemarks.trim() || 'Dates clash with scheduled internal examinations / Attendance requirement not satisfied.';
-    await callApi('ADVISOR_REJECT', {
-      reqId,
-      remarks,
-      advisorName: user.name,
-    });
-    setShowReviewModal(null);
-    setReviewRemarks('');
-  };
-
-  // -------------------------------------------------------------
-  // HOD SANCTION / REJECT (CONFIRMATION MAIL TO STUDENT DISPATCHED IF ADVISOR APPROVED)
-  // -------------------------------------------------------------
-  const handleHodApprove = async (reqId) => {
-    const remarks = reviewRemarks.trim() || 'Officially approved with college attendance compensation.';
-    await callApi('HOD_APPROVE', {
-      reqId,
-      remarks,
-      hodName: user.name,
-    });
-    setShowReviewModal(null);
-    setReviewRemarks('');
-  };
-
-  const handleHodReject = async (reqId) => {
-    const remarks = reviewRemarks.trim() || 'Department quota exceeded / Event not aligned with curriculum priorities.';
-    await callApi('HOD_REJECT', {
-      reqId,
-      remarks,
-      hodName: user.name,
-    });
-    setShowReviewModal(null);
-    setReviewRemarks('');
-  };
-
-  // -------------------------------------------------------------
-  // SUBMIT RESULT
-  // -------------------------------------------------------------
-  const handleSaveResult = async (e) => {
-    e.preventDefault();
-    if (!showResultModal) return;
-
-    await callApi('SUBMIT_RESULT', {
-      reqId: showResultModal.id,
-      studentName: user.name,
-      status: resultData.status,
-      projectName: resultData.projectName.trim() || showResultModal.eventName,
-      description: resultData.description.trim(),
-      certificateName: resultFile ? resultFile.name : `Certificate_${showResultModal.id}.pdf`,
+  const resendOtp = () =>
+    run(async () => {
+      const res = await api('LOGIN', { role: 'STUDENT', email: normEmail() });
+      setResendIn(res.resendAfter || 60);
+      setInfo('A new code has been sent to your email.');
     });
 
-    setShowResultModal(null);
-    setResultFile(null);
-    setResultData({ status: 'WON', projectName: '', description: '' });
-  };
-
-  // Export CSV Report
-  const handleExportCSV = () => {
-    const headers = ['OD_ID', 'Student_Name', 'Roll_No', 'Year', 'Section', 'Event_Type', 'Event_Name', 'Event_Date', 'Status', 'Advisor_Approval', 'HOD_Sanction'];
-    const rows = requests.map((r) => [
-      r.id,
-      `"${r.studentName}"`,
-      r.rollNumber,
-      r.year,
-      r.section,
-      r.eventType,
-      `"${r.eventName}"`,
-      r.eventDate,
-      r.status,
-      r.advisorName ? `Approved (${r.advisorName})` : 'Pending Advisor',
-      r.hodName ? `Sanctioned (${r.hodName})` : 'Pending HOD',
-    ]);
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `SMVEC_IT_OD_Report_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // -------------------------------------------------------------
-  // RENDER: MOBILE SUCCESS OR LOGIN VIEW
-  // -------------------------------------------------------------
-  if (isMobileMode && user) {
-    if (typeof window !== 'undefined') {
-      window.__CLERK_USER__ = user;
-      if (window.ClerkMobileBridge) {
-        try {
-          window.ClerkMobileBridge.postMessage(JSON.stringify(user));
-        } catch (_) {}
+  const submitOtp = (ev) => {
+    ev.preventDefault();
+    run(async () => {
+      const res = await api('VERIFY_OTP', { email: normEmail(), otp: otp.trim() });
+      if (res.needsRegistration) {
+        setRegToken(res.regToken);
+        setStep('register');
+        setInfo('Email verified. Complete your student profile to continue.');
+      } else {
+        onLogin({ token: res.token, user: res.user });
       }
-    }
-    return (
-      <div style={{ padding: '40px 20px', textAlign: 'center', background: '#f8fafc', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>
-        <div style={{ fontSize: '3.5rem', marginBottom: '16px' }}>✅</div>
-        <h2 style={{ color: '#059669', fontSize: '1.4rem', fontWeight: '800', marginBottom: '8px' }}>
-          Authentication Successful!
-        </h2>
-        <p style={{ fontSize: '0.95rem', color: '#1e293b', fontWeight: '600', marginBottom: '4px' }}>
-          {user.name} ({user.email})
-        </p>
-        <p style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '20px' }}>
-          Role: <strong>{user.role}</strong> · SMVEC IT Department
-        </p>
-        <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '12px 20px', borderRadius: '8px', fontSize: '0.85rem', color: '#065f46', fontWeight: '600' }}>
-          Transferring session to SMVEC Mobile App...
-        </div>
-      </div>
-    );
-  }
+    });
+  };
 
-  if (!user) {
-    return (
-      <div className={styles.appContainer}>
-        {/* Top Navbar (Hidden in Flutter In-App WebView) */}
-        {!isMobileMode && (
-          <>
-            <header className={styles.topNav}>
-              <div className={styles.topNavInner}>
-                <Link href="/" className={styles.brandGroup}>
-                  <img src="/college_logo.png" alt="SMVEC Logo" className={styles.brandLogo} />
-                  <div className={styles.brandInfo}>
-                    <span className={styles.brandTitle}>SMVEC ON-DUTY SYSTEM</span>
-                    <span className={styles.brandSubtitle}>Department of Information Technology</span>
-                  </div>
-                </Link>
-                <div className={styles.navActions}>
-                  <a href="/downloads/smvec-od.apk" download="smvec-od.apk" className={styles.navLinkBtn}>
-                    📱 Download Real APK (~45.7 MB)
-                  </a>
-                  <Link href="/" className={styles.navLinkBtn}>
-                    ← Back to Landing Page
-                  </Link>
-                </div>
-              </div>
-            </header>
+  const submitRegister = (ev) => {
+    ev.preventDefault();
+    run(async () => {
+      const payload = { role, email: normEmail(), name: reg.name, year: Number(reg.year), section: reg.section };
+      if (role === 'STUDENT') Object.assign(payload, { rollNumber: reg.rollNumber, regToken });
+      else Object.assign(payload, { batch: reg.batch, password });
+      const res = await api('REGISTER', payload);
+      onLogin({ token: res.token, user: res.user });
+    });
+  };
 
-            <div style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '10px 24px', textAlign: 'center', fontSize: '0.8rem', color: '#475569' }}>
-              🔒 <strong>Institutional Security:</strong> Access is restricted strictly to verified <strong>@smvec.ac.in</strong> email accounts.
-            </div>
-          </>
-        )}
-        {/* Login Container */}
-        <div className={styles.authContainer}>
-          <div className={styles.authCard} style={{ maxWidth: '460px', width: '100%' }}>
-            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-              <img src="/college_logo.png" alt="SMVEC Logo" className={styles.authHeaderLogo} />
-              <h1 className={styles.authTitle} style={{ fontSize: '1.4rem' }}>Portal Authentication</h1>
-              <p className={styles.authSubtitle} style={{ fontSize: '0.82rem' }}>
-                Select your institutional role to proceed
-              </p>
-            </div>
-
-            {/* Role Tabs */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px', marginBottom: '20px', background: '#f1f5f9', padding: '4px', borderRadius: '10px' }}>
-              <button
-                type="button"
-                className={`${styles.roleTab} ${authRoleTab === 'STUDENT' ? styles.roleTabActive : ''}`}
-                style={{ padding: '8px 4px', fontSize: '0.78rem' }}
-                onClick={() => {
-                  setAuthRoleTab('STUDENT');
-                  setAuthError('');
-                  setAuthPassword('');
-                }}
-              >
-                🎓 Student
-              </button>
-              <button
-                type="button"
-                className={`${styles.roleTab} ${authRoleTab === 'ADVISOR' ? styles.roleTabActive : ''}`}
-                style={{ padding: '8px 4px', fontSize: '0.78rem' }}
-                onClick={() => {
-                  setAuthRoleTab('ADVISOR');
-                  setAuthError('');
-                  setAuthPassword('');
-                }}
-              >
-                👩‍🏫 Staff / Advisor
-              </button>
-              <button
-                type="button"
-                className={`${styles.roleTab} ${authRoleTab === 'HOD' ? styles.roleTabActive : ''}`}
-                style={{ padding: '8px 4px', fontSize: '0.78rem' }}
-                onClick={() => {
-                  setAuthRoleTab('HOD');
-                  setAuthError('');
-                  setAuthPassword('');
-                }}
-              >
-                👨‍💼 HOD
-              </button>
-            </div>
-
-            {/* Error Message Display */}
-            {authError && (
-              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', color: '#b91c1c', fontSize: '0.82rem', lineHeight: '1.4' }}>
-                {authError}
-              </div>
-            )}
-
-            {/* Google Workspace Auth Button (@smvec.ac.in) */}
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              style={{
-                width: '100%',
-                padding: '11px',
-                background: '#ffffff',
-                border: '1px solid #cbd5e1',
-                borderRadius: '8px',
-                color: '#1e293b',
-                fontWeight: '600',
-                fontSize: '0.86rem',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '10px',
-                cursor: 'pointer',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-                marginBottom: '18px',
-              }}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
-                <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
-                <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
-                <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
-              </svg>
-              Continue with Google (@smvec.ac.in)
-            </button>
-
-            <div style={{ display: 'flex', alignItems: 'center', margin: '14px 0', gap: '10px' }}>
-              <div style={{ flex: 1, height: '1px', background: '#e2e8f0' }} />
-              <span style={{ fontSize: '0.72rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Or Institutional Email</span>
-              <div style={{ flex: 1, height: '1px', background: '#e2e8f0' }} />
-            </div>
-
-            {/* Role-Specific Form */}
-            <form onSubmit={handleLogin}>
-              <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                <label className={styles.formLabel}>College Email ID (@smvec.ac.in)</label>
-                <input
-                  type="email"
-                  className={styles.formInput}
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                  
-                  required
-                />
-              </div>
-
-              {/* STUDENT FIELDS */}
-              {authRoleTab === 'STUDENT' && (
-                <>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Roll Number</label>
-                      <input
-                        type="text"
-                        className={styles.formInput}
-                        value={authRoll}
-                        onChange={(e) => setAuthRoll(e.target.value)}
-                        
-                        required
-                      />
-                    </div>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Full Name</label>
-                      <input
-                        type="text"
-                        className={styles.formInput}
-                        value={authName}
-                        onChange={(e) => setAuthName(e.target.value)}
-                        
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '18px' }}>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Academic Year</label>
-                      <select className={styles.formInput} value={authYear} onChange={(e) => setAuthYear(e.target.value)}>
-                        <option value="1">1st Year</option>
-                        <option value="2">2nd Year</option>
-                        <option value="3">3rd Year</option>
-                        <option value="4">4th Year</option>
-                      </select>
-                    </div>
-                    <div className={styles.formGroup}>
-                      <label className={styles.formLabel}>Section</label>
-                      <select className={styles.formInput} value={authSection} onChange={(e) => setAuthSection(e.target.value)}>
-                        <option value="A">Section A</option>
-                        <option value="B">Section B</option>
-                        <option value="C">Section C</option>
-                      </select>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* STAFF / ADVISOR PASSWORD FIELD */}
-              {authRoleTab === 'ADVISOR' && (
-                <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label className={styles.formLabel}>Staff Password</label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setForgotRole('ADVISOR');
-                        setForgotEmail(authEmail || '');
-                        setForgotStep(1);
-                        setForgotError('');
-                        setShowForgotModal(true);
-                      }}
-                      style={{ background: 'none', border: 'none', color: '#3350b0', fontSize: '0.74rem', cursor: 'pointer', textDecoration: 'underline' }}
-                    >
-                      Forgot Password?
-                    </button>
-                  </div>
-                  <input
-                    type="password"
-                    className={styles.formInput}
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    
-                    required
-                  />
-                </div>
-              )}
-
-              {/* HOD PASSWORD FIELD */}
-              {authRoleTab === 'HOD' && (
-                <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label className={styles.formLabel}>HOD Password</label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setForgotRole('HOD');
-                        setForgotEmail(authEmail || '');
-                        setForgotStep(1);
-                        setForgotError('');
-                        setShowForgotModal(true);
-                      }}
-                      style={{ background: 'none', border: 'none', color: '#3350b0', fontSize: '0.74rem', cursor: 'pointer', textDecoration: 'underline' }}
-                    >
-                      Forgot Password?
-                    </button>
-                  </div>
-                  <input
-                    type="password"
-                    className={styles.formInput}
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    
-                    required
-                  />
-                </div>
-              )}
-
-              <button type="submit" className={styles.authSubmitBtn} style={{ width: '100%', marginTop: '8px' }}>
-                Sign In as {authRoleTab === 'STUDENT' ? 'Student' : authRoleTab === 'ADVISOR' ? 'Class Advisor' : 'HOD'} →
-              </button>
-            </form>
-          </div>
-        </div>
-
-        {/* ========================================================= */}
-        {/* FORGOT PASSWORD MODAL (STRICTLY FOR STAFF & HOD VIA RESEND) */}
-        {/* ========================================================= */}
-        {showForgotModal && (
-          <div className={styles.modalBackdrop}>
-            <div className={styles.modalBox} style={{ maxWidth: '420px' }}>
-              <div className={styles.modalHeader}>
-                <h3 className={styles.modalTitle}>
-                  🔑 {forgotRole === 'HOD' ? 'HOD' : 'Staff'} Password Recovery
-                </h3>
-                <button className={styles.closeModalBtn} onClick={() => setShowForgotModal(false)}>
-                  ✕
-                </button>
-              </div>
-
-              {forgotError && (
-                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', padding: '10px', marginBottom: '14px', color: '#b91c1c', fontSize: '0.8rem' }}>
-                  {forgotError}
-                </div>
-              )}
-
-              {/* STEP 1: Enter Email to Dispatch Resend OTP */}
-              {forgotStep === 1 && (
-                <form onSubmit={handleRequestForgotOtp}>
-                  <p style={{ fontSize: '0.84rem', color: '#4b5563', marginBottom: '14px' }}>
-                    Enter your official <strong>@smvec.ac.in</strong> email address. A 6-digit security code will be dispatched via <strong>Resend</strong>.
-                  </p>
-                  <div className={styles.formGroup} style={{ marginBottom: '16px' }}>
-                    <label className={styles.formLabel}>Official Email (@smvec.ac.in)</label>
-                    <input
-                      type="email"
-                      className={styles.formInput}
-                      value={forgotEmail}
-                      onChange={(e) => setForgotEmail(e.target.value)}
-                      
-                      required
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={forgotLoading}
-                    className={styles.authSubmitBtn}
-                    style={{ width: '100%' }}
-                  >
-                    {forgotLoading ? 'Dispatching via Resend...' : 'Send Verification Code →'}
-                  </button>
-                </form>
-              )}
-
-              {/* STEP 2: Enter 6-digit OTP */}
-              {forgotStep === 2 && (
-                <form onSubmit={handleVerifyForgotOtp}>
-                  <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '6px', padding: '10px', marginBottom: '14px', fontSize: '0.8rem', color: '#1e40af' }}>
-                    ✓ Code dispatched via Resend to <strong>{forgotEmail}</strong>.
-                  </div>
-                  <div className={styles.formGroup} style={{ marginBottom: '16px' }}>
-                    <label className={styles.formLabel}>Enter 6-Digit Code</label>
-                    <input
-                      type="text"
-                      className={styles.formInput}
-                      value={forgotOtp}
-                      onChange={(e) => setForgotOtp(e.target.value)}
-                      
-                      maxLength={6}
-                      style={{ letterSpacing: '4px', textAlign: 'center', fontSize: '1.2rem', fontWeight: '800' }}
-                      required
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={forgotLoading}
-                    className={styles.authSubmitBtn}
-                    style={{ width: '100%' }}
-                  >
-                    {forgotLoading ? 'Verifying...' : 'Verify Code →'}
-                  </button>
-                </form>
-              )}
-
-              {/* STEP 3: Verification Successful */}
-              {forgotStep === 3 && (
-                <div style={{ textAlign: 'center', padding: '10px 0' }}>
-                  <div style={{ fontSize: '2rem', marginBottom: '8px' }}>✅</div>
-                  <h4 style={{ color: '#065f46', fontSize: '1.05rem', margin: '0 0 8px' }}>Identity Verified</h4>
-                  <p style={{ fontSize: '0.85rem', color: '#4b5563', marginBottom: '16px' }}>
-                    Your {forgotRole === 'HOD' ? 'HOD' : 'Staff'} identity has been authenticated via Resend. You may now proceed directly to your institutional portal.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setUser({
-                        name: forgotRole === 'HOD' ? 'Dr. R. RAJU (HOD/IT)' : 'Class Advisor (IT-III-A)',
-                        email: forgotEmail,
-                        role: forgotRole,
-                        department: 'Information Technology',
-                        year: 3,
-                        section: 'A',
-                      });
-                      setShowForgotModal(false);
-                    }}
-                    className={styles.authSubmitBtn}
-                    style={{ width: '100%' }}
-                  >
-                    Proceed to Dashboard →
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // -------------------------------------------------------------
-  // RENDER: AUTHENTICATED DASHBOARDS
-  // -------------------------------------------------------------
-  const userRequests = requests.filter(
-    (r) => r.rollNumber === user.rollNumber || r.studentEmail === user.email
-  );
-  const classRequests = requests.filter((r) => r.year === 3 && r.section === 'A');
-  const forwardedToHod = requests.filter((r) => r.status === 'APPROVED_BY_ADVISOR');
-  const approvedRequests = requests.filter((r) => r.status === 'APPROVED');
+  const title = { STUDENT: 'Student login', STAFF: 'Staff login', HOD: 'HOD login' }[role];
+  const subtitle = {
+    STUDENT: 'Sign in with your college email. We will email you a one-time code.',
+    STAFF: 'Sign in with your official email ID and the staff password.',
+    HOD: 'Sign in with the HOD email ID and password.',
+  }[role];
 
   return (
     <div className={styles.appContainer}>
-      {/* Top Navbar */}
-      <header className={styles.topNav}>
-        <div className={styles.topNavInner}>
-          <Link href="/" className={styles.brandGroup}>
-            <img src="/college_logo.png" alt="SMVEC Logo" className={styles.brandLogo} />
-            <div className={styles.brandInfo}>
-              <span className={styles.brandTitle}>SMVEC ON-DUTY SYSTEM</span>
-              <span className={styles.brandSubtitle}>
-                {user.role === 'STUDENT' && '🎓 Student Portal'}
-                {user.role === 'ADVISOR' && '👩‍🏫 Class Advisor Approval Portal'}
-                {user.role === 'HOD' && '👨‍💼 HOD Departmental Portal'}
-              </span>
-            </div>
-          </Link>
+      <TopBar>
+        <a href="/downloads/smvec-od.apk" download className={styles.ghostBtn}>Download app</a>
+        <Link href="/" className={styles.ghostBtn}>Home</Link>
+      </TopBar>
 
-          <div className={styles.navActions}>
-            <span
-              className={`${styles.roleBadge} ${
-                user.role === 'STUDENT'
-                  ? styles.roleBadgeStudent
-                  : user.role === 'ADVISOR'
-                  ? styles.roleBadgeAdvisor
-                  : styles.roleBadgeHod
-              }`}
-            >
-              ● {user.name} ({user.role === 'STUDENT' ? user.rollNumber : user.role})
-            </span>
-
-            {/* Sign Out Button */}
-            <button
-              onClick={() => {
-                setUser(null);
-                if (clerkSignedIn && clerk?.signOut) {
-                  clerk.signOut();
-                }
-              }}
-              style={{
-                padding: '6px 12px',
-                fontSize: '0.76rem',
-                fontWeight: '600',
-                background: '#fee2e2',
-                color: '#dc2626',
-                border: '1px solid #fecaca',
-                borderRadius: '6px',
-                cursor: 'pointer',
-              }}
-            >
-              Sign Out
-            </button>
-          </div>
+      <main className={styles.authContainer}>
+        <div className={styles.authHead}>
+          <img src="/college_logo.png" alt="SMVEC logo" className={styles.authLogo} />
+          <h1 className={styles.authTitle}>SMVEC OD PORTAL</h1>
+          <p className={styles.authSubtitle}>IT Department · Sri Manakula Vinayagar Engineering College</p>
         </div>
-      </header>
 
-      {/* Main Container */}
-      <main className={styles.mainLayout}>
-        {/* ========================================================= */}
-        {/* 1. STUDENT VIEW */}
-        {/* ========================================================= */}
-        {user.role === 'STUDENT' && (
-          <div>
-            <div className={styles.portalBanner}>
-              <div>
-                <h2 className={styles.bannerTitle}>Student On-Duty Portal</h2>
-                <p className={styles.bannerSub}>
-                  {user.name} · Roll: <strong>{user.rollNumber}</strong> · Year {user.year} - Section {user.section} · Dept of {user.department}
-                </p>
-              </div>
-              <button
-                className={styles.bannerActionBtn}
-                onClick={() => {
-                  setFormError('');
-                  setShowNewODModal(true);
-                }}
-                id="btn-new-od"
-              >
-                + Submit New OD Application
-              </button>
-            </div>
+        <div className={styles.roleSelector} role="tablist">
+          {[
+            ['STUDENT', 'Student'],
+            ['STAFF', 'Staff'],
+            ['HOD', 'HOD'],
+          ].map(([r, label]) => (
+            <button
+              key={r}
+              type="button"
+              role="tab"
+              aria-selected={role === r}
+              className={`${styles.roleTab} ${role === r ? styles.roleTabActive : ''}`}
+              onClick={() => switchRole(r)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
-            {/* Applications List */}
-            <div className={styles.cardSection}>
-              <h3 className={styles.sectionHeading}>My On-Duty Submissions</h3>
+        <div className={styles.authCard}>
+          <h2 className={styles.cardTitle}>
+            {step === 'register' ? (role === 'STUDENT' ? 'Student profile' : 'Class details') : step === 'otp' ? 'Enter code' : title}
+          </h2>
+          <p className={styles.cardSub}>{step === 'form' ? subtitle : info}</p>
 
-              {userRequests.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px 20px', background: '#ffffff', borderRadius: '12px', border: '1px solid #e5e7eb' }}>
-                  <div style={{ fontSize: '2.5rem', marginBottom: '10px' }}>📋</div>
-                  <h4 style={{ fontSize: '1.1rem', fontWeight: '700', color: '#1e293b', marginBottom: '6px' }}>
-                    No OD Requests Submitted Yet
-                  </h4>
-                  <p style={{ fontSize: '0.85rem', color: '#64748b', maxWidth: '400px', margin: '0 auto 16px' }}>
-                    Apply for On-Duty leave for technical hackathons, symposiums, internships, or college representations.
-                  </p>
-                  <button
-                    onClick={() => {
-                      setFormError('');
-                      setShowNewODModal(true);
-                    }}
-                    style={{
-                      padding: '10px 22px',
-                      background: '#3350b0',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '8px',
-                      fontWeight: '700',
-                      fontSize: '0.85rem',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    + Submit OD Application
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  {userRequests.map((req) => (
-                    <div key={req.id} className={styles.requestCard}>
-                      <div className={styles.requestCardHeader}>
-                        <div>
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '4px' }}>
-                            <span
-                              style={{
-                                background: req.submissionType === 'TEAM' ? '#fef3c7' : '#f3f4f6',
-                                color: req.submissionType === 'TEAM' ? '#b45309' : '#4b5563',
-                                padding: '3px 8px',
-                                borderRadius: '6px',
-                                fontSize: '0.72rem',
-                                fontWeight: '700',
-                              }}
-                            >
-                              {req.submissionType}
-                            </span>
-                            <span style={{ fontSize: '0.8rem', color: '#9ca3af', fontWeight: '600' }}>
-                              #{req.id}
-                            </span>
-                          </div>
-                          <h4 style={{ fontSize: '1.15rem', fontWeight: '800', color: '#1e293b', marginBottom: '4px' }}>
-                            {req.eventName}
-                          </h4>
-                          <div style={{ fontSize: '0.85rem', color: '#6b7280', display: 'flex', gap: '12px' }}>
-                            <span>📅 Date: <strong>{req.eventDate}</strong> ({req.eventDay})</span>
-                            <span>📎 Document: <em>{req.attachmentName}</em></span>
-                          </div>
-                        </div>
-
-                        {/* Status Badge */}
-                        <div>
-                          {req.status === 'APPROVED' && (
-                            <span className={`${styles.statusBadge} ${styles.statusApproved}`}>
-                              ✓ Fully Sanctioned by HOD
-                            </span>
-                          )}
-                          {req.status === 'APPROVED_BY_ADVISOR' && (
-                            <span className={`${styles.statusBadge} ${styles.statusForwarded}`}>
-                              ✓ Approved by Class Advisor (Awaiting HOD)
-                            </span>
-                          )}
-                          {req.status === 'PENDING_ADVISOR' && (
-                            <span className={`${styles.statusBadge} ${styles.statusPending}`}>
-                              ⏳ Waiting for Class Advisor Approval
-                            </span>
-                          )}
-                          {(req.status === 'REJECTED_ADVISOR' || req.status === 'REJECTED_HOD') && (
-                            <span className={`${styles.statusBadge} ${styles.statusRejected}`}>
-                              ✕ Rejected ({req.status === 'REJECTED_ADVISOR' ? 'by Advisor' : 'by HOD'})
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* 4-Step Interactive Progress Stepper */}
-                      <div className={styles.stepperTrack}>
-                        <div className={styles.stepItem}>
-                          <div className={`${styles.stepCircle} ${styles.stepCircleDone}`}>✓</div>
-                          <span className={styles.stepLabel}>1. Submitted</span>
-                        </div>
-                        <div className={`${styles.stepDivider} ${req.status !== 'PENDING_ADVISOR' ? styles.stepDividerDone : ''}`} />
-                        <div className={styles.stepItem}>
-                          <div
-                            className={`${styles.stepCircle} ${
-                              req.status === 'REJECTED_ADVISOR'
-                                ? styles.stepCircleRejected
-                                : req.status === 'APPROVED_BY_ADVISOR' || req.status === 'APPROVED'
-                                ? styles.stepCircleDone
-                                : styles.stepCircleActive
-                            }`}
-                          >
-                            {req.status === 'REJECTED_ADVISOR' ? '✕' : req.status === 'APPROVED_BY_ADVISOR' || req.status === 'APPROVED' ? '✓' : '2'}
-                          </div>
-                          <span className={styles.stepLabel}>
-                            {req.status === 'APPROVED_BY_ADVISOR' || req.status === 'APPROVED'
-                              ? '2. Advisor Approved ✓'
-                              : '2. Advisor Approval'}
-                          </span>
-                        </div>
-                        <div className={`${styles.stepDivider} ${req.status === 'APPROVED' ? styles.stepDividerDone : ''}`} />
-                        <div className={styles.stepItem}>
-                          <div
-                            className={`${styles.stepCircle} ${
-                              req.status === 'REJECTED_HOD'
-                                ? styles.stepCircleRejected
-                                : req.status === 'APPROVED'
-                                ? styles.stepCircleDone
-                                : req.status === 'APPROVED_BY_ADVISOR'
-                                ? styles.stepCircleActive
-                                : styles.stepCirclePending
-                            }`}
-                          >
-                            {req.status === 'REJECTED_HOD' ? '✕' : req.status === 'APPROVED' ? '✓' : '3'}
-                          </div>
-                          <span className={styles.stepLabel}>
-                            {req.status === 'APPROVED' ? '3. HOD Sanctioned ✓' : '3. HOD Decision'}
-                          </span>
-                        </div>
-                        <div className={`${styles.stepDivider} ${req.status === 'APPROVED' ? styles.stepDividerDone : ''}`} />
-                        <div className={styles.stepItem}>
-                          <div
-                            className={`${styles.stepCircle} ${
-                              req.status === 'APPROVED' ? styles.stepCircleDone : styles.stepCirclePending
-                            }`}
-                          >
-                            {req.status === 'APPROVED' ? '🎓' : '4'}
-                          </div>
-                          <span className={styles.stepLabel}>4. OD Sanction Valid</span>
-                        </div>
-                      </div>
-
-                      <p style={{ fontSize: '0.88rem', color: '#4b5563', lineHeight: '1.5', margin: '8px 0' }}>
-                        {req.description}
-                      </p>
-
-                      {/* Remarks from Advisor / HOD */}
-                      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
-                        {req.advisorRemarks && (
-                          <div
-                            style={{
-                              flex: 1,
-                              minWidth: '240px',
-                              background: '#eff6ff',
-                              border: '1px solid #bfdbfe',
-                              padding: '10px 14px',
-                              borderRadius: '8px',
-                              fontSize: '0.8rem',
-                            }}
-                          >
-                            <span style={{ fontWeight: '700', color: '#1e40af' }}>
-                              👩‍🏫 Class Advisor Note ({req.advisorName}):
-                            </span>
-                            <div style={{ color: '#1e3a8a', marginTop: '2px' }}>{req.advisorRemarks}</div>
-                          </div>
-                        )}
-                        {req.hodRemarks && (
-                          <div
-                            style={{
-                              flex: 1,
-                              minWidth: '240px',
-                              background: '#ecfdf5',
-                              border: '1px solid #a7f3d0',
-                              padding: '10px 14px',
-                              borderRadius: '8px',
-                              fontSize: '0.8rem',
-                            }}
-                          >
-                            <span style={{ fontWeight: '700', color: '#065f46' }}>
-                              👨‍💼 Official HOD Sanction Seal ({req.hodName}):
-                            </span>
-                            <div style={{ color: '#047857', marginTop: '2px' }}>{req.hodRemarks}</div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Result Submission Section */}
-                      {req.status === 'APPROVED' && (
-                        <div
-                          style={{
-                            marginTop: '14px',
-                            paddingTop: '12px',
-                            borderTop: '1px solid #e5e7eb',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            flexWrap: 'wrap',
-                            gap: '10px',
-                          }}
-                        >
-                          {req.resultStatus !== 'PENDING' ? (
-                            <div style={{ fontSize: '0.85rem' }}>
-                              🏆 <strong>Result Recorded:</strong> {req.resultStatus} · <em>{req.resultProjectName}</em>
-                            </div>
-                          ) : (
-                            <div style={{ fontSize: '0.85rem', color: '#6b7280' }}>
-                              Event finished? Record your achievements & upload certificates.
-                            </div>
-                          )}
-
-                          {req.resultStatus === 'PENDING' && (
-                            <button
-                              style={{
-                                padding: '8px 16px',
-                                background: '#d4a429',
-                                color: '#ffffff',
-                                border: 'none',
-                                borderRadius: '8px',
-                                fontSize: '0.8rem',
-                                fontWeight: '700',
-                                cursor: 'pointer',
-                              }}
-                              onClick={() => {
-                                setShowResultModal(req);
-                                setResultData({ status: 'WON', projectName: req.eventName, description: '' });
-                              }}
-                            >
-                              🏆 Submit Event Results
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+          {step === 'form' && (
+            <form onSubmit={submitLogin} className={styles.form}>
+              <Field label={`College email ID (${DOMAIN})`}>
+                <input
+                  type="email"
+                  className={styles.input}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder={role === 'HOD' ? 'hodit@smvec.ac.in' : `name${DOMAIN}`}
+                  autoComplete="email"
+                  required
+                />
+              </Field>
+              {role !== 'STUDENT' && (
+                <Field label={role === 'HOD' ? 'HOD password' : 'Staff password'} group>
+                  <div className={styles.inputWrap}>
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      className={styles.input}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoComplete="current-password"
+                      required
+                    />
+                    <button type="button" className={styles.inputAddon} onClick={() => setShowPassword((v) => !v)}>
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </Field>
               )}
-            </div>
-          </div>
-        )}
+              <ErrorBox text={error} />
+              <button type="submit" className={styles.primaryBtn} disabled={busy}>
+                {busy ? 'Please wait…' : role === 'STUDENT' ? 'Send login code' : 'Sign in'}
+              </button>
+            </form>
+          )}
 
-        {/* ========================================================= */}
-        {/* 2. CLASS ADVISOR VIEW */}
-        {/* ========================================================= */}
-        {user.role === 'ADVISOR' && (
-          <div>
-            <div className={styles.portalBanner}>
-              <div>
-                <h2 className={styles.bannerTitle}>Class Advisor Approval Authority</h2>
-                <p className={styles.bannerSub}>
-                  {user.name} · Dept of {user.department} · In-Charge: <strong>Year {user.year} - Section {user.section}</strong>
-                </p>
+          {step === 'otp' && (
+            <form onSubmit={submitOtp} className={styles.form}>
+              <Field label="6-digit code">
+                <input
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  className={`${styles.input} ${styles.otpInput}`}
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                  autoFocus
+                  required
+                />
+              </Field>
+              <ErrorBox text={error} />
+              <button type="submit" className={styles.primaryBtn} disabled={busy || otp.length !== 6}>
+                {busy ? 'Verifying…' : 'Verify and continue'}
+              </button>
+              <div className={styles.rowBetween}>
+                <button type="button" className={styles.linkBtn} onClick={() => switchRole('STUDENT')}>
+                  Change email
+                </button>
+                <button type="button" className={styles.linkBtn} onClick={resendOtp} disabled={busy || resendIn > 0}>
+                  {resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}
+                </button>
               </div>
-              <div style={{ fontSize: '0.85rem', background: 'rgba(255,255,255,0.2)', padding: '8px 16px', borderRadius: '8px' }}>
-                Pending Class Requests: <strong>{classRequests.filter((r) => r.status === 'PENDING_ADVISOR').length}</strong>
-              </div>
-            </div>
+            </form>
+          )}
 
-            {/* Instruction Callout */}
-            <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '12px 18px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px', fontSize: '0.85rem', color: '#92400e' }}>
-              <span style={{ fontSize: '1.2rem' }}>⚡</span>
-              <div>
-                <strong>Class Advisor Approval Gate:</strong> You must click <strong>"✓ Approve OD Request"</strong> on a student submission to verify attendance and permit it to move to HOD for final sanction. Without your approval, the student cannot receive On-Duty status.
-              </div>
-            </div>
-
-            {/* Submissions List */}
-            <div className={styles.cardSection}>
-              <h3 className={styles.sectionHeading} style={{ marginBottom: '16px' }}>
-                Class Submissions Queue
-              </h3>
-
-              {classRequests.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px 20px', background: '#ffffff', borderRadius: '12px', border: '1px solid #e5e7eb' }}>
-                  <div style={{ fontSize: '2.5rem', marginBottom: '10px' }}>📭</div>
-                  <h4 style={{ fontSize: '1.1rem', fontWeight: '700', color: '#1e293b', marginBottom: '6px' }}>
-                    No OD Requests in Queue
-                  </h4>
-                  <p style={{ fontSize: '0.85rem', color: '#64748b' }}>
-                    When students from your class submit On-Duty applications, they will appear here for your verification.
-                  </p>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {classRequests.map((req) => (
-                    <div
-                      key={req.id}
-                      style={{
-                        padding: '18px',
-                        border: req.status === 'PENDING_ADVISOR' ? '2px solid #f59e0b' : '1px solid #e5e7eb',
-                        borderRadius: '12px',
-                        background: '#ffffff',
-                        boxShadow: req.status === 'PENDING_ADVISOR' ? '0 4px 12px rgba(245,158,11,0.08)' : 'none',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px' }}>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ fontWeight: '800', fontSize: '1.05rem', color: '#1e293b' }}>
-                              {req.studentName}
-                            </span>
-                            <span style={{ fontSize: '0.82rem', color: '#6b7280' }}>
-                              (Roll: {req.rollNumber})
-                            </span>
-                            <span
-                              style={{
-                                background: '#eff6ff',
-                                color: '#1d4ed8',
-                                fontSize: '0.72rem',
-                                padding: '2px 6px',
-                                borderRadius: '4px',
-                                fontWeight: '700',
-                              }}
-                            >
-                              {req.submissionType}
-                            </span>
-                          </div>
-                          <div style={{ fontSize: '0.98rem', fontWeight: '700', color: '#3350b0', margin: '4px 0' }}>
-                            {req.eventName} ({req.eventType})
-                          </div>
-                          <div style={{ fontSize: '0.82rem', color: '#6b7280' }}>
-                            📅 Date: {req.eventDate} ({req.eventDay}) · 📎 Document: {req.attachmentName}
-                          </div>
-                        </div>
-
-                        <div>
-                          {req.status === 'PENDING_ADVISOR' ? (
-                            <span className={`${styles.statusBadge} ${styles.statusPending}`}>
-                              ⏳ Action Required: Click Approve
-                            </span>
-                          ) : req.status === 'APPROVED_BY_ADVISOR' ? (
-                            <span className={`${styles.statusBadge} ${styles.statusForwarded}`}>
-                              ✓ Approved by You (At HOD)
-                            </span>
-                          ) : req.status === 'APPROVED' ? (
-                            <span className={`${styles.statusBadge} ${styles.statusApproved}`}>
-                              HOD Approved ✓
-                            </span>
-                          ) : (
-                            <span className={`${styles.statusBadge} ${styles.statusRejected}`}>
-                              Rejected
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <p style={{ fontSize: '0.85rem', color: '#4b5563', margin: '10px 0', background: '#f9fafb', padding: '10px', borderRadius: '8px' }}>
-                        {req.description}
-                      </p>
-
-                      {/* Action buttons */}
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
-                        {req.status === 'PENDING_ADVISOR' ? (
-                          <>
-                            <button
-                              style={{
-                                padding: '8px 16px',
-                                background: '#fee2e2',
-                                color: '#dc2626',
-                                border: '1px solid #fecaca',
-                                borderRadius: '8px',
-                                fontSize: '0.82rem',
-                                fontWeight: '700',
-                                cursor: 'pointer',
-                              }}
-                              onClick={() => {
-                                setShowReviewModal(req);
-                                setReviewRemarks('');
-                              }}
-                            >
-                              ✕ Reject with Feedback
-                            </button>
-                            <button
-                              style={{
-                                padding: '10px 22px',
-                                background: '#059669',
-                                color: '#ffffff',
-                                border: 'none',
-                                borderRadius: '8px',
-                                fontSize: '0.85rem',
-                                fontWeight: '700',
-                                cursor: 'pointer',
-                                boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
-                              }}
-                              onClick={() => {
-                                setShowReviewModal(req);
-                                setReviewRemarks('Verified attendance and academic standing. Approved by Class Advisor.');
-                              }}
-                              id="btn-advisor-approve"
-                            >
-                              ✓ Approve OD Request →
-                            </button>
-                          </>
-                        ) : (
-                          <div style={{ fontSize: '0.8rem', color: '#065f46', background: '#f0fdf4', padding: '6px 12px', borderRadius: '6px' }}>
-                            ✓ <strong>Advisor Endorsement:</strong> "{req.advisorRemarks}"
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+          {step === 'register' && (
+            <form onSubmit={submitRegister} className={styles.form}>
+              <Field label="Full name">
+                <input className={styles.input} value={reg.name} onChange={(e) => setReg({ ...reg, name: e.target.value })} required />
+              </Field>
+              {role === 'STUDENT' && (
+                <Field label="Register number">
+                  <input
+                    className={styles.input}
+                    value={reg.rollNumber}
+                    onChange={(e) => setReg({ ...reg, rollNumber: e.target.value.toUpperCase() })}
+                    required
+                  />
+                </Field>
               )}
-            </div>
-          </div>
-        )}
-
-        {/* ========================================================= */}
-        {/* 3. HOD VIEW */}
-        {/* ========================================================= */}
-        {user.role === 'HOD' && (
-          <div>
-            <div className={styles.portalBanner}>
-              <div>
-                <h2 className={styles.bannerTitle}>HOD Departmental Executive Portal</h2>
-                <p className={styles.bannerSub}>
-                  {user.name} · Head of Department, {user.department} · Sri Manakula Vinayagar Eng. College
-                </p>
-              </div>
-              <button
-                className={styles.bannerActionBtn}
-                onClick={handleExportCSV}
-                id="btn-export-report"
-              >
-                📥 Export Department OD Report (CSV)
-              </button>
-            </div>
-
-            {/* HOD Tabs */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
-              <button
-                className={`${styles.roleTab} ${hodTab === 'PENDING' ? styles.roleTabActive : ''}`}
-                style={{ flex: 'none', padding: '8px 18px', border: '1px solid #e5e7eb' }}
-                onClick={() => setHodTab('PENDING')}
-              >
-                Advisor-Approved Awaiting Sanction ({forwardedToHod.length})
-              </button>
-              <button
-                className={`${styles.roleTab} ${hodTab === 'APPROVED' ? styles.roleTabActive : ''}`}
-                style={{ flex: 'none', padding: '8px 18px', border: '1px solid #e5e7eb' }}
-                onClick={() => setHodTab('APPROVED')}
-              >
-                Sanctioned Archive ({approvedRequests.length})
-              </button>
-              <button
-                className={`${styles.roleTab} ${hodTab === 'AUDIT' ? styles.roleTabActive : ''}`}
-                style={{ flex: 'none', padding: '8px 18px', border: '1px solid #e5e7eb' }}
-                onClick={() => setHodTab('AUDIT')}
-              >
-                Live Audit Trail ({auditLogs.length})
-              </button>
-            </div>
-
-            {/* TAB 1: PENDING HOD SANCTION */}
-            {hodTab === 'PENDING' && (
-              <div className={styles.cardSection}>
-                <h3 className={styles.sectionHeading} style={{ marginBottom: '16px' }}>
-                  Requests Endorsed by Class Advisors (Awaiting Final HOD Sanction)
-                </h3>
-
-                {forwardedToHod.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '40px 20px', background: '#ffffff', borderRadius: '12px', border: '1px solid #e5e7eb' }}>
-                    <div style={{ fontSize: '2.5rem', marginBottom: '10px' }}>📭</div>
-                    <h4 style={{ fontSize: '1.1rem', fontWeight: '700', color: '#1e293b', marginBottom: '6px' }}>
-                      No Requests Awaiting HOD Sanction
-                    </h4>
-                    <p style={{ fontSize: '0.85rem', color: '#64748b' }}>
-                      Only requests that have been verified and approved by Class Advisors will appear here for final sanction.
-                    </p>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    {forwardedToHod.map((req) => (
-                      <div
-                        key={req.id}
-                        style={{
-                          padding: '20px',
-                          border: '2px solid #2563eb',
-                          borderRadius: '12px',
-                          background: '#ffffff',
-                          boxShadow: '0 4px 14px rgba(37,99,235,0.08)',
-                        }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <span style={{ fontWeight: '800', fontSize: '1.1rem', color: '#1e293b' }}>
-                                {req.studentName}
-                              </span>
-                              <span style={{ fontSize: '0.85rem', color: '#6b7280' }}>
-                                (Roll: {req.rollNumber} · Year {req.year}-{req.section})
-                              </span>
-                            </div>
-                            <div style={{ fontSize: '1.05rem', fontWeight: '700', color: '#3350b0', margin: '4px 0' }}>
-                              {req.eventName} ({req.eventType})
-                            </div>
-                            <div style={{ fontSize: '0.82rem', color: '#6b7280' }}>
-                              📅 Event Date: {req.eventDate} ({req.eventDay}) · 📎 Document: {req.attachmentName}
-                            </div>
-                          </div>
-
-                          <span className={`${styles.statusBadge} ${styles.statusForwarded}`}>
-                            ⚡ Advisor Endorsed
-                          </span>
-                        </div>
-
-                        {/* Advisor Recommendation Note */}
-                        <div
-                          style={{
-                            background: '#eff6ff',
-                            borderLeft: '4px solid #3b82f6',
-                            padding: '10px 14px',
-                            borderRadius: '6px',
-                            marginBottom: '16px',
-                          }}
-                        >
-                          <div style={{ fontSize: '0.78rem', fontWeight: '700', color: '#1e40af' }}>
-                            Class Advisor Official Recommendation ({req.advisorName}):
-                          </div>
-                          <div style={{ fontSize: '0.82rem', color: '#1e3a8a', marginTop: '2px' }}>
-                            "{req.advisorRemarks}"
-                          </div>
-                        </div>
-
-                        {/* Action Buttons */}
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-                          <button
-                            style={{
-                              padding: '8px 18px',
-                              background: '#fee2e2',
-                              color: '#dc2626',
-                              border: '1px solid #fecaca',
-                              borderRadius: '8px',
-                              fontSize: '0.85rem',
-                              fontWeight: '700',
-                              cursor: 'pointer',
-                            }}
-                            onClick={() => {
-                              setShowReviewModal(req);
-                              setReviewRemarks('');
-                            }}
-                          >
-                            Reject OD
-                          </button>
-                          <button
-                            style={{
-                              padding: '10px 24px',
-                              background: '#059669',
-                              color: '#ffffff',
-                              border: 'none',
-                              borderRadius: '8px',
-                              fontSize: '0.85rem',
-                              fontWeight: '700',
-                              cursor: 'pointer',
-                              boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
-                            }}
-                            onClick={() => handleHodApprove(req.id)}
-                            id="btn-hod-sanction"
-                          >
-                            ✓ Officially Sanction OD (Send Confirmation Mail)
-                          </button>
-                        </div>
-                      </div>
+              <div className={styles.grid2}>
+                <Field label={role === 'STUDENT' ? 'Year' : 'Class year'}>
+                  <select className={styles.input} value={reg.year} onChange={(e) => setReg({ ...reg, year: e.target.value })} required>
+                    <option value="">Select</option>
+                    {YEARS.map((y) => (
+                      <option key={y} value={y}>Year {y}</option>
                     ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* TAB 2: Sanctioned Archive */}
-            {hodTab === 'APPROVED' && (
-              <div className={styles.cardSection}>
-                <h3 className={styles.sectionHeading} style={{ marginBottom: '16px' }}>
-                  Officially Sanctioned On-Duty Records
-                </h3>
-
-                {approvedRequests.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '30px', color: '#64748b' }}>
-                    No OD applications have received final sanction yet.
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {approvedRequests.map((req) => (
-                      <div
-                        key={req.id}
-                        style={{
-                          padding: '14px 18px',
-                          border: '1px solid #a7f3d0',
-                          background: '#f0fdf4',
-                          borderRadius: '10px',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: '10px',
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontWeight: '800', color: '#065f46' }}>
-                            {req.studentName} ({req.rollNumber}) · {req.eventName}
-                          </div>
-                          <div style={{ fontSize: '0.8rem', color: '#047857' }}>
-                            Sanctioned by {req.hodName} on {req.eventDate} ({req.eventType}) · {req.submissionType}
-                          </div>
-                          <div style={{ fontSize: '0.75rem', color: '#059669', marginTop: '2px' }}>
-                            Vetted by Advisor: {req.advisorName} · Student Email: {req.studentEmail}
-                          </div>
-                        </div>
-                        <span className={`${styles.statusBadge} ${styles.statusApproved}`}>
-                          Official OD Valid ✓
-                        </span>
-                      </div>
+                  </select>
+                </Field>
+                <Field label="Section">
+                  <select className={styles.input} value={reg.section} onChange={(e) => setReg({ ...reg, section: e.target.value })} required>
+                    <option value="">Select</option>
+                    {SECTIONS.map((s) => (
+                      <option key={s} value={s}>Sec {s}</option>
                     ))}
-                  </div>
-                )}
+                  </select>
+                </Field>
               </div>
-            )}
+              {role === 'STAFF' && (
+                <Field label="Batch (e.g. 2023-2027)">
+                  <input className={styles.input} value={reg.batch} onChange={(e) => setReg({ ...reg, batch: e.target.value })} required />
+                </Field>
+              )}
+              <ErrorBox text={error} />
+              <button type="submit" className={styles.primaryBtn} disabled={busy}>
+                {busy ? 'Saving…' : 'Continue'}
+              </button>
+              <button type="button" className={styles.linkBtn} onClick={() => switchRole(role)}>
+                Back
+              </button>
+            </form>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
 
-            {/* TAB 3: Audit Trail */}
-            {hodTab === 'AUDIT' && (
-              <div className={styles.cardSection}>
-                <h3 className={styles.sectionHeading} style={{ marginBottom: '16px' }}>
-                  Live System Audit Trail & Decision Log
-                </h3>
+// ---------------------------------------------------------------------------
+// Dashboard shell
+// ---------------------------------------------------------------------------
 
-                {auditLogs.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '30px', color: '#64748b' }}>
-                    No audit records logged yet.
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {auditLogs.map((log) => (
-                      <div
-                        key={log.id}
-                        style={{
-                          padding: '12px 16px',
-                          border: '1px solid #e5e7eb',
-                          borderRadius: '8px',
-                          background: '#f9fafb',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '14px',
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: '10px',
-                            height: '10px',
-                            borderRadius: '50%',
-                            background:
-                              log.action === 'APPROVED' || log.action === 'SANCTIONED_BY_HOD'
-                                ? '#059669'
-                                : log.action === 'APPROVED_BY_ADVISOR'
-                                ? '#2563eb'
-                                : log.action.includes('REJECTED')
-                                ? '#dc2626'
-                                : '#3350b0',
-                          }}
-                        />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span style={{ fontSize: '0.85rem', fontWeight: '700', color: '#1e293b' }}>
-                              [{log.role}] {log.actor} | {log.action.replace(/_/g, ' ')}
-                            </span>
-                            <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>{log.time}</span>
-                          </div>
-                          <div style={{ fontSize: '0.8rem', color: '#4b5563', marginTop: '2px' }}>
-                            {log.details}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+function Dashboard({ session, onLogout, onUserUpdate }) {
+  const { token, user } = session;
+  const [data, setData] = useState({ requests: [], notifications: [], auditLogs: [] });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [showNotifs, setShowNotifs] = useState(false);
+  const [toast, setToast] = useState('');
+
+  const call = useCallback(
+    async (action, payload) => {
+      try {
+        return await api(action, payload, token);
+      } catch (err) {
+        if (err.status === 401) onLogout();
+        throw err;
+      }
+    },
+    [token, onLogout]
+  );
+
+  const refresh = useCallback(
+    () =>
+      call('SYNC')
+        .then((res) => {
+          setData(res.data);
+          setError('');
+        })
+        .catch((err) => setError(err.message))
+        .finally(() => setLoading(false)),
+    [call]
+  );
+
+  // Sync on load and when the tab regains focus. No background polling, to keep
+  // Upstash / Vercel usage low.
+  useEffect(() => {
+    refresh();
+    const onVisible = () => document.visibilityState === 'visible' && refresh();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(''), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // Applies a server-updated request locally so we don't need another SYNC.
+  const upsert = (request) =>
+    setData((d) => {
+      const rest = d.requests.filter((r) => r.id !== request.id);
+      return { ...d, requests: [request, ...rest].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))) };
+    });
+
+  const roleName = { STUDENT: 'Student portal', STAFF: 'Class advisor portal', HOD: 'HOD portal' }[user.role];
+  const badgeClass = { STUDENT: styles.badgeStudent, STAFF: styles.badgeStaff, HOD: styles.badgeHod }[user.role];
+  const ctx = { user, call, upsert, refresh, setToast, onUserUpdate };
+
+  return (
+    <div className={styles.appContainer}>
+      <TopBar subtitle={roleName}>
+        <span className={`${styles.roleBadge} ${badgeClass}`}>
+          {user.name}
+          {user.role === 'STUDENT' && user.rollNumber ? ` · ${user.rollNumber}` : ''}
+        </span>
+        <button type="button" className={styles.iconBtn} onClick={() => setShowNotifs(true)} aria-label="Notifications">
+          🔔
+          {data.notifications.length > 0 && <span className={styles.notifBadge}>{data.notifications.length}</span>}
+        </button>
+        <button type="button" className={styles.ghostBtn} onClick={refresh}>Refresh</button>
+        <button type="button" className={styles.dangerBtn} onClick={onLogout}>Sign out</button>
+      </TopBar>
+
+      <main className={styles.main}>
+        {error && <ErrorBox text={error} />}
+        {loading ? (
+          <p className={styles.muted}>Loading…</p>
+        ) : user.role === 'STUDENT' ? (
+          <StudentView data={data} ctx={ctx} />
+        ) : user.role === 'STAFF' ? (
+          <AdvisorView data={data} ctx={ctx} />
+        ) : (
+          <HodView data={data} ctx={ctx} />
         )}
       </main>
 
-      {/* ========================================================= */}
-      {/* MODAL: CREATE NEW OD REQUEST (STUDENT - NO WATERMARK) */}
-      {/* ========================================================= */}
-      {showNewODModal && (
-        <div className={styles.modalBackdrop}>
-          <div className={styles.modalBox} style={{ maxWidth: '520px' }}>
-            <div className={styles.modalHeader}>
-              <h3 className={styles.modalTitle}>Submit On-Duty Application</h3>
-              <button className={styles.closeModalBtn} onClick={() => setShowNewODModal(false)}>
-                ✕
-              </button>
-            </div>
-
-            {formError && (
-              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', padding: '10px', marginBottom: '14px', color: '#b91c1c', fontSize: '0.82rem' }}>
-                {formError}
-              </div>
-            )}
-
-            <form onSubmit={handleCreateOD}>
-              {/* Participation Type */}
-              <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                <label className={styles.formLabel}>Participation Type</label>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <button
-                    type="button"
-                    className={`${styles.roleTab} ${formData.submissionType === 'SOLO' ? styles.roleTabActive : ''}`}
-                    style={{ border: '1px solid #d1d5db' }}
-                    onClick={() => setFormData({ ...formData, submissionType: 'SOLO' })}
-                  >
-                    👤 Solo
-                  </button>
-                  <button
-                    type="button"
-                    className={`${styles.roleTab} ${formData.submissionType === 'TEAM' ? styles.roleTabActive : ''}`}
-                    style={{ border: '1px solid #d1d5db' }}
-                    onClick={() => setFormData({ ...formData, submissionType: 'TEAM' })}
-                  >
-                    👥 Team
-                  </button>
-                </div>
-              </div>
-
-              {/* Event Category */}
-              <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                <label className={styles.formLabel}>Event Category</label>
-                <select
-                  className={styles.formInput}
-                  value={formData.eventType}
-                  onChange={(e) => setFormData({ ...formData, eventType: e.target.value })}
-                >
-                  <option value="Hackathon">Hackathon</option>
-                  <option value="Internship">Internship</option>
-                  <option value="Paper Presentation">Paper Presentation</option>
-                  <option value="Workshop">Technical Workshop</option>
-                  <option value="Symposium">College Symposium</option>
-                  <option value="Sports">Sports / Cultural</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-
-              {/* Event Name - CLEAN INPUT NO WATERMARK */}
-              <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                <label className={styles.formLabel}>Official Event Name</label>
-                <input
-                  type="text"
-                  className={styles.formInput}
-                  value={formData.eventName}
-                  onChange={(e) => setFormData({ ...formData, eventName: e.target.value })}
-                  
-                  required
-                />
-              </div>
-
-              {/* Event Date & Day */}
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '12px', marginBottom: '14px' }}>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>Event Date</label>
-                  <input
-                    type="date"
-                    className={styles.formInput}
-                    value={formData.eventDate}
-                    onChange={handleDateChange}
-                    required
-                  />
-                </div>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>Day</label>
-                  <input
-                    type="text"
-                    className={styles.formInput}
-                    value={formData.eventDay}
-                    readOnly
-                    style={{ background: '#f3f4f6', color: '#4b5563' }}
-                    
-                  />
-                </div>
-              </div>
-
-              {/* Description - CLEAN INPUT NO WATERMARK */}
-              <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                <label className={styles.formLabel}>Detailed Purpose / Venue Details</label>
-                <textarea
-                  className={styles.formInput}
-                  rows={3}
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  
-                  required
-                />
-              </div>
-
-              {/* REAL FILE ATTACHMENT UPLOAD (WATERMARK COMPLETELY REMOVED) */}
-              <div className={styles.formGroup} style={{ marginBottom: '20px' }}>
-                <label className={styles.formLabel}>Event Document / Proof Attachment (PDF, JPG, PNG)</label>
-                <input
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg"
-                  className={styles.formInput}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) setSelectedFile(f);
-                  }}
-                  id="file-upload-input"
-                />
-                {selectedFile ? (
-                  <div style={{ marginTop: '8px', fontSize: '0.82rem', color: '#059669', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>📎 Selected: <strong>{selectedFile.name}</strong> ({(selectedFile.size / 1024).toFixed(1)} KB)</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedFile(null);
-                        const inp = document.getElementById('file-upload-input');
-                        if (inp) inp.value = '';
-                      }}
-                      style={{ background: 'transparent', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '0.8rem' }}
-                    >
-                      ✕ Remove
-                    </button>
-                  </div>
-                ) : (
-                  <span style={{ fontSize: '0.74rem', color: '#64748b', marginTop: '4px', display: 'block' }}>
-                    Attach your invitation letter, registration receipt, or brochure.
-                  </span>
-                )}
-              </div>
-
-              <button type="submit" className={styles.authSubmitBtn} style={{ width: '100%' }}>
-                Submit to Class Advisor for Approval →
-              </button>
-            </form>
-          </div>
-        </div>
+      {showNotifs && (
+        <Modal title="Notifications" onClose={() => setShowNotifs(false)}>
+          {data.notifications.length === 0 ? (
+            <p className={styles.muted}>No notifications yet.</p>
+          ) : (
+            <ul className={styles.notifList}>
+              {data.notifications.map((n) => (
+                <li key={n.id} className={styles.notifItem}>
+                  <strong>{n.title}</strong>
+                  <span>{n.text}</span>
+                  <small>{fmtTime(n.time)}</small>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Modal>
       )}
 
-      {/* ========================================================= */}
-      {/* MODAL: ADVISOR / HOD REVIEW & APPROVAL MODAL */}
-      {/* ========================================================= */}
-      {showReviewModal && (
-        <div className={styles.modalBackdrop}>
-          <div className={styles.modalBox}>
-            <div className={styles.modalHeader}>
-              <h3 className={styles.modalTitle}>
-                {user.role === 'ADVISOR' ? 'Class Advisor Review & Approval' : 'HOD Final Sanction Review'} (#{showReviewModal.id})
-              </h3>
-              <button className={styles.closeModalBtn} onClick={() => setShowReviewModal(null)}>
-                ✕
-              </button>
-            </div>
-
-            <div>
-              <p><strong>Student:</strong> {showReviewModal.studentName} ({showReviewModal.rollNumber})</p>
-              <p><strong>Class:</strong> Year {showReviewModal.year} - Section {showReviewModal.section} · {showReviewModal.department}</p>
-              <p><strong>Event:</strong> {showReviewModal.eventName} ({showReviewModal.eventType})</p>
-              <p><strong>Date:</strong> {showReviewModal.eventDate} ({showReviewModal.eventDay})</p>
-              <p><strong>Document:</strong> {showReviewModal.attachmentName}</p>
-              <p style={{ marginTop: '8px', color: '#4b5563' }}><strong>Description:</strong> {showReviewModal.description}</p>
-
-              {showReviewModal.advisorRemarks && (
-                <div style={{ background: '#eff6ff', padding: '10px', borderRadius: '8px', margin: '12px 0' }}>
-                  <strong>Advisor Approval Note:</strong> "{showReviewModal.advisorRemarks}"
-                </div>
-              )}
-
-              <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <label className={styles.formLabel}>
-                  {user.role === 'ADVISOR' ? 'Class Advisor Remarks:' : 'Official HOD Sanction Remarks:'}
-                </label>
-                <textarea
-                  className={styles.formInput}
-                  rows={3}
-                  value={reviewRemarks}
-                  onChange={(e) => setReviewRemarks(e.target.value)}
-                  
-                />
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
-                <button
-                  style={{
-                    padding: '10px 18px',
-                    background: '#fee2e2',
-                    color: '#dc2626',
-                    border: '1px solid #fecaca',
-                    borderRadius: '8px',
-                    fontWeight: '700',
-                    cursor: 'pointer',
-                  }}
-                  onClick={() => {
-                    if (user.role === 'ADVISOR') handleAdvisorReject(showReviewModal.id);
-                    if (user.role === 'HOD') handleHodReject(showReviewModal.id);
-                  }}
-                >
-                  Reject Request
-                </button>
-
-                {user.role === 'ADVISOR' ? (
-                  <button
-                    style={{
-                      padding: '10px 22px',
-                      background: '#059669',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '8px',
-                      fontWeight: '700',
-                      cursor: 'pointer',
-                      boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
-                    }}
-                    onClick={() => handleAdvisorApprove(showReviewModal.id)}
-                  >
-                    ✓ Approve & Forward to HOD →
-                  </button>
-                ) : (
-                  <button
-                    style={{
-                      padding: '10px 22px',
-                      background: '#059669',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '8px',
-                      fontWeight: '700',
-                      cursor: 'pointer',
-                      boxShadow: '0 2px 8px rgba(5,150,105,0.3)',
-                    }}
-                    onClick={() => handleHodApprove(showReviewModal.id)}
-                  >
-                    ✓ Officially Sanction OD (Send Mail)
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* MODAL: POST-EVENT RESULT SUBMISSION */}
-      {/* ========================================================= */}
-      {showResultModal && (
-        <div className={styles.modalBackdrop}>
-          <div className={styles.modalBox}>
-            <div className={styles.modalHeader}>
-              <h3 className={styles.modalTitle}>Submit Post-Event Achievement</h3>
-              <button className={styles.closeModalBtn} onClick={() => setShowResultModal(null)}>
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveResult}>
-              <p style={{ marginBottom: '14px', fontSize: '0.9rem' }}>
-                Event: <strong>{showResultModal.eventName}</strong>
-              </p>
-
-              <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                <label className={styles.formLabel}>Achievement Result</label>
-                <select
-                  className={styles.formInput}
-                  value={resultData.status}
-                  onChange={(e) => setResultData({ ...resultData, status: e.target.value })}
-                >
-                  <option value="WON">🏆 Won 1st / 2nd / 3rd Prize</option>
-                  <option value="SPECIAL_AWARD">🎖️ Special Jury Award / Cash Prize</option>
-                  <option value="PARTICIPATION">📜 Successful Participation</option>
-                </select>
-              </div>
-
-              <div className={styles.formGroup} style={{ marginBottom: '14px' }}>
-                <label className={styles.formLabel}>Project / Paper Title</label>
-                <input
-                  type="text"
-                  className={styles.formInput}
-                  value={resultData.projectName}
-                  onChange={(e) => setResultData({ ...resultData, projectName: e.target.value })}
-                  
-                  required
-                />
-              </div>
-
-              {/* REAL CERTIFICATE UPLOAD NO WATERMARK */}
-              <div className={styles.formGroup} style={{ marginBottom: '20px' }}>
-                <label className={styles.formLabel}>Certificate / Proof Attachment</label>
-                <input
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg"
-                  className={styles.formInput}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) setResultFile(f);
-                  }}
-                />
-                {resultFile && (
-                  <span style={{ fontSize: '0.8rem', color: '#059669', display: 'block', marginTop: '4px' }}>
-                    📎 {resultFile.name} ({(resultFile.size / 1024).toFixed(1)} KB)
-                  </span>
-                )}
-              </div>
-
-              <button type="submit" className={styles.authSubmitBtn} style={{ width: '100%' }}>
-                Save Achievement to College Records →
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
+      {toast && <div className={styles.toast}>{toast}</div>}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Student
+// ---------------------------------------------------------------------------
+
+function StudentView({ data, ctx }) {
+  const { user } = ctx;
+  const [showNew, setShowNew] = useState(false);
+  const [resultFor, setResultFor] = useState(null);
+  const reqs = data.requests;
+  const count = (fn) => reqs.filter(fn).length;
+
+  return (
+    <>
+      <section className={styles.banner}>
+        <div>
+          <h2 className={styles.bannerTitle}>Hello, {user.name}</h2>
+          <p className={styles.bannerSub}>
+            {user.rollNumber} · Year {user.year} · Section {user.section} · {user.department}
+          </p>
+        </div>
+        <button type="button" className={styles.bannerBtn} onClick={() => setShowNew(true)}>+ New OD request</button>
+      </section>
+
+      <div className={styles.kpiGrid}>
+        <Kpi label="Total" value={reqs.length} />
+        <Kpi label="Pending" value={count((r) => r.status === 'PENDING_ADVISOR' || r.status === 'APPROVED_BY_ADVISOR')} />
+        <Kpi label="Approved" value={count((r) => r.status === 'APPROVED')} />
+        <Kpi label="Rejected" value={count((r) => r.status.startsWith('REJECTED'))} />
+      </div>
+
+      <h3 className={styles.sectionHeading}>My OD requests</h3>
+      {reqs.length === 0 ? (
+        <Empty text="You haven't submitted any OD requests yet." action={<button className={styles.primaryBtn} onClick={() => setShowNew(true)}>Submit your first request</button>} />
+      ) : (
+        <div className={styles.list}>
+          {reqs.map((r) => (
+            <RequestCard key={r.id} r={r} showStepper>
+              {r.status === 'APPROVED' && r.resultStatus === 'PENDING' && (
+                <button className={styles.secondaryBtn} onClick={() => setResultFor(r)}>Add event result</button>
+              )}
+            </RequestCard>
+          ))}
+        </div>
+      )}
+
+      {showNew && <NewOdModal ctx={ctx} onClose={() => setShowNew(false)} />}
+      {resultFor && <ResultModal ctx={ctx} request={resultFor} onClose={() => setResultFor(null)} />}
+    </>
+  );
+}
+
+function NewOdModal({ ctx, onClose }) {
+  const { user, call, upsert, setToast } = ctx;
+  const [advisors, setAdvisors] = useState(null);
+  const [form, setForm] = useState(() => {
+    const d = new Date(Date.now() + 3 * 864e5);
+    return {
+      advisorEmail: '',
+      submissionType: 'SOLO',
+      eventType: 'Hackathon',
+      eventName: '',
+      eventDate: d.toISOString().slice(0, 10),
+      description: '',
+      teamMembers: [`${user.name} (${user.rollNumber || ''})`],
+    };
+  });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    call('ADVISORS')
+      .then((res) => {
+        setAdvisors(res.advisors);
+        const own = res.advisors.find((a) => a.year === user.year && a.section === user.section);
+        if (own) setForm((f) => ({ ...f, advisorEmail: own.email }));
+      })
+      .catch((err) => {
+        setAdvisors([]);
+        setError(err.message);
+      });
+  }, [call, user.year, user.section]);
+
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  const submit = async (ev) => {
+    ev.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      const day = DAYS[new Date(`${form.eventDate}T00:00:00`).getDay()];
+      const res = await call('CREATE_OD', { ...form, eventDay: day, teamMembers: form.submissionType === 'TEAM' ? form.teamMembers : [] });
+      upsert(res.request);
+      setToast('OD request submitted to your advisor.');
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="New OD request" onClose={onClose}>
+      <form onSubmit={submit} className={styles.form}>
+        <Field label="Class advisor">
+          <select className={styles.input} value={form.advisorEmail} onChange={set('advisorEmail')} required>
+            <option value="">{advisors === null ? 'Loading advisors…' : advisors.length ? 'Select your advisor' : 'No advisors registered yet'}</option>
+            {(advisors || []).map((a) => (
+              <option key={a.email} value={a.email}>
+                {a.name} · Year {a.year} Sec {a.section} ({a.batch})
+              </option>
+            ))}
+          </select>
+        </Field>
+        <div className={styles.grid2}>
+          <Field label="Event type">
+            <select className={styles.input} value={form.eventType} onChange={set('eventType')}>
+              {EVENT_TYPES.map((t) => (
+                <option key={t}>{t}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Event date">
+            <input type="date" className={styles.input} value={form.eventDate} onChange={set('eventDate')} required />
+          </Field>
+        </div>
+        <Field label="Event name">
+          <input className={styles.input} value={form.eventName} onChange={set('eventName')} maxLength={120} required />
+        </Field>
+        <Field label="Participation" group>
+          <div className={styles.segmented}>
+            {['SOLO', 'TEAM'].map((t) => (
+              <button
+                key={t}
+                type="button"
+                className={form.submissionType === t ? styles.segActive : ''}
+                onClick={() => setForm({ ...form, submissionType: t })}
+              >
+                {t === 'SOLO' ? 'Solo' : 'Team'}
+              </button>
+            ))}
+          </div>
+        </Field>
+        {form.submissionType === 'TEAM' && (
+          <Field label="Team members (max 5)" group>
+            <div className={styles.form}>
+              {form.teamMembers.map((m, i) => (
+                <div key={i} className={styles.inputWrap}>
+                  <input
+                    className={styles.input}
+                    value={m}
+                    placeholder="Name (Register number)"
+                    onChange={(e) => {
+                      const tm = [...form.teamMembers];
+                      tm[i] = e.target.value;
+                      setForm({ ...form, teamMembers: tm });
+                    }}
+                  />
+                  {i > 0 && (
+                    <button type="button" className={styles.inputAddon} onClick={() => setForm({ ...form, teamMembers: form.teamMembers.filter((_, j) => j !== i) })}>
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+              {form.teamMembers.length < 5 && (
+                <button type="button" className={styles.linkBtn} onClick={() => setForm({ ...form, teamMembers: [...form.teamMembers, ''] })}>
+                  + Add member
+                </button>
+              )}
+            </div>
+          </Field>
+        )}
+        <Field label="Description">
+          <textarea className={styles.input} rows={4} value={form.description} onChange={set('description')} maxLength={1000} required />
+        </Field>
+        <ErrorBox text={error} />
+        <button type="submit" className={styles.primaryBtn} disabled={busy}>
+          {busy ? 'Submitting…' : 'Submit request'}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
+function ResultModal({ ctx, request, onClose }) {
+  const { call, upsert, setToast } = ctx;
+  const [status, setStatus] = useState('PARTICIPATION');
+  const [projectName, setProjectName] = useState(request.eventName);
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (ev) => {
+    ev.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const res = await call('SUBMIT_RESULT', { reqId: request.id, status, projectName, description });
+      upsert(res.request);
+      setToast('Result saved.');
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Result · ${request.eventName}`} onClose={onClose}>
+      <form onSubmit={submit} className={styles.form}>
+        <Field label="Outcome" group>
+          <div className={styles.segmented}>
+            {[
+              ['PARTICIPATION', 'Participated'],
+              ['WON', 'Won a prize'],
+            ].map(([v, l]) => (
+              <button key={v} type="button" className={status === v ? styles.segActive : ''} onClick={() => setStatus(v)}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Project / topic name">
+          <input className={styles.input} value={projectName} onChange={(e) => setProjectName(e.target.value)} maxLength={120} />
+        </Field>
+        <Field label="Details">
+          <textarea className={styles.input} rows={3} value={description} onChange={(e) => setDescription(e.target.value)} maxLength={1000} />
+        </Field>
+        <ErrorBox text={error} />
+        <button type="submit" className={styles.primaryBtn} disabled={busy}>
+          {busy ? 'Saving…' : 'Save result'}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Class advisor (staff)
+// ---------------------------------------------------------------------------
+
+function AdvisorView({ data, ctx }) {
+  const { user } = ctx;
+  const [tab, setTab] = useState('PENDING');
+  const [editClass, setEditClass] = useState(false);
+  const [deciding, setDeciding] = useState(null);
+  const pending = data.requests.filter((r) => r.status === 'PENDING_ADVISOR');
+  const reviewed = data.requests.filter((r) => r.status !== 'PENDING_ADVISOR');
+  const shown = tab === 'PENDING' ? pending : reviewed;
+
+  return (
+    <>
+      <section className={styles.banner}>
+        <div>
+          <h2 className={styles.bannerTitle}>{user.name}</h2>
+          <p className={styles.bannerSub}>
+            Class advisor · Year {user.year} · Section {user.section} · Batch {user.batch}
+          </p>
+        </div>
+        <button type="button" className={styles.bannerBtn} onClick={() => setEditClass(true)}>Edit class details</button>
+      </section>
+
+      <div className={styles.kpiGrid}>
+        <Kpi label="Awaiting review" value={pending.length} />
+        <Kpi label="Forwarded to HOD" value={data.requests.filter((r) => r.status === 'APPROVED_BY_ADVISOR').length} />
+        <Kpi label="Approved" value={data.requests.filter((r) => r.status === 'APPROVED').length} />
+        <Kpi label="Rejected" value={data.requests.filter((r) => r.status.startsWith('REJECTED')).length} />
+      </div>
+
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        items={[
+          ['PENDING', `Pending (${pending.length})`],
+          ['REVIEWED', `Reviewed (${reviewed.length})`],
+        ]}
+      />
+      {shown.length === 0 ? (
+        <Empty text={tab === 'PENDING' ? 'No requests waiting for your review.' : 'Nothing reviewed yet.'} />
+      ) : (
+        <div className={styles.list}>
+          {shown.map((r) => (
+            <RequestCard key={r.id} r={r} showStudent>
+              {r.status === 'PENDING_ADVISOR' && (
+                <>
+                  <button className={styles.approveBtn} onClick={() => setDeciding({ r, approve: true })}>Approve and forward</button>
+                  <button className={styles.rejectBtn} onClick={() => setDeciding({ r, approve: false })}>Reject</button>
+                </>
+              )}
+            </RequestCard>
+          ))}
+        </div>
+      )}
+
+      {editClass && <ClassModal ctx={ctx} onClose={() => setEditClass(false)} />}
+      {deciding && <DecisionModal ctx={ctx} action="ADVISOR_DECIDE" {...deciding} onClose={() => setDeciding(null)} />}
+    </>
+  );
+}
+
+function ClassModal({ ctx, onClose }) {
+  const { user, call, onUserUpdate, setToast } = ctx;
+  const [form, setForm] = useState({ year: String(user.year || ''), section: user.section || '', batch: user.batch || currentBatch() });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (ev) => {
+    ev.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const res = await call('UPDATE_CLASS', { ...form, year: Number(form.year) });
+      onUserUpdate(res.user);
+      setToast('Class details updated.');
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Class details" onClose={onClose}>
+      <form onSubmit={submit} className={styles.form}>
+        <div className={styles.grid2}>
+          <Field label="Year">
+            <select className={styles.input} value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} required>
+              {YEARS.map((y) => (
+                <option key={y} value={y}>Year {y}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Section">
+            <select className={styles.input} value={form.section} onChange={(e) => setForm({ ...form, section: e.target.value })} required>
+              {SECTIONS.map((s) => (
+                <option key={s} value={s}>Sec {s}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <Field label="Batch (e.g. 2023-2027)">
+          <input className={styles.input} value={form.batch} onChange={(e) => setForm({ ...form, batch: e.target.value })} required />
+        </Field>
+        <ErrorBox text={error} />
+        <button type="submit" className={styles.primaryBtn} disabled={busy}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// HOD
+// ---------------------------------------------------------------------------
+
+function HodView({ data, ctx }) {
+  const [tab, setTab] = useState('AWAITING');
+  const [query, setQuery] = useState('');
+  const [deciding, setDeciding] = useState(null);
+  const reqs = data.requests;
+  const awaiting = reqs.filter((r) => r.status === 'APPROVED_BY_ADVISOR');
+
+  const shown = useMemo(() => {
+    const base = tab === 'AWAITING' ? awaiting : reqs;
+    const q = query.trim().toLowerCase();
+    if (!q) return base;
+    return base.filter((r) =>
+      [r.studentName, r.rollNumber, r.eventName, r.advisorName, r.id, r.eventType].some((v) => String(v || '').toLowerCase().includes(q))
+    );
+  }, [tab, reqs, awaiting, query]);
+
+  const exportCsv = () => {
+    const cols = ['id', 'studentName', 'rollNumber', 'year', 'section', 'advisorName', 'eventType', 'eventName', 'eventDate', 'submissionType', 'status', 'resultStatus', 'createdAt'];
+    const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const csv = [cols.join(','), ...reqs.map((r) => cols.map((c) => escape(r[c])).join(','))].join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SMVEC_IT_OD_Report_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <>
+      <section className={styles.banner}>
+        <div>
+          <h2 className={styles.bannerTitle}>HOD dashboard</h2>
+          <p className={styles.bannerSub}>Department of Information Technology · Final OD sanction</p>
+        </div>
+        <button type="button" className={styles.bannerBtn} onClick={exportCsv} disabled={!reqs.length}>Export CSV</button>
+      </section>
+
+      <div className={styles.kpiGrid}>
+        <Kpi label="Awaiting sanction" value={awaiting.length} />
+        <Kpi label="With advisors" value={reqs.filter((r) => r.status === 'PENDING_ADVISOR').length} />
+        <Kpi label="Approved" value={reqs.filter((r) => r.status === 'APPROVED').length} />
+        <Kpi label="Prizes won" value={reqs.filter((r) => r.resultStatus === 'WON').length} />
+      </div>
+
+      <div className={styles.rowBetween}>
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          items={[
+            ['AWAITING', `Awaiting (${awaiting.length})`],
+            ['ALL', `All (${reqs.length})`],
+            ['AUDIT', 'Audit log'],
+          ]}
+        />
+        {tab !== 'AUDIT' && (
+          <input className={`${styles.input} ${styles.search}`} placeholder="Search student, event, advisor…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        )}
+      </div>
+
+      {tab === 'AUDIT' ? (
+        data.auditLogs.length === 0 ? (
+          <Empty text="No activity yet." />
+        ) : (
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr><th>Time</th><th>Action</th><th>By</th><th>Details</th></tr>
+              </thead>
+              <tbody>
+                {data.auditLogs.map((a) => (
+                  <tr key={a.id + a.time}>
+                    <td>{fmtTime(a.time)}</td>
+                    <td>{a.action.replace(/_/g, ' ').toLowerCase()}</td>
+                    <td>{a.actor}</td>
+                    <td>{a.details}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : shown.length === 0 ? (
+        <Empty text={tab === 'AWAITING' ? 'Nothing waiting for your sanction.' : 'No requests found.'} />
+      ) : (
+        <div className={styles.list}>
+          {shown.map((r) => (
+            <RequestCard key={r.id} r={r} showStudent showAdvisor>
+              {r.status === 'APPROVED_BY_ADVISOR' && (
+                <>
+                  <button className={styles.approveBtn} onClick={() => setDeciding({ r, approve: true })}>Sanction OD</button>
+                  <button className={styles.rejectBtn} onClick={() => setDeciding({ r, approve: false })}>Reject</button>
+                </>
+              )}
+            </RequestCard>
+          ))}
+        </div>
+      )}
+
+      {deciding && <DecisionModal ctx={ctx} action="HOD_DECIDE" {...deciding} onClose={() => setDeciding(null)} />}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared pieces
+// ---------------------------------------------------------------------------
+
+function DecisionModal({ ctx, action, r, approve, onClose }) {
+  const { call, upsert, setToast } = ctx;
+  const [remarks, setRemarks] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (ev) => {
+    ev.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const res = await call(action, { reqId: r.id, approve, remarks });
+      upsert(res.request);
+      setToast(approve ? 'Request approved.' : 'Request rejected.');
+      onClose();
+    } catch (err) {
+      setError(err.message);
+      if (err.status === 409) ctx.refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`${approve ? 'Approve' : 'Reject'} · ${r.eventName}`} onClose={onClose}>
+      <form onSubmit={submit} className={styles.form}>
+        <p className={styles.muted}>
+          {r.studentName} ({r.rollNumber}) · {r.eventType} on {fmtDate(r.eventDate)}
+        </p>
+        <Field label={approve ? 'Remarks (optional)' : 'Reason for rejection'}>
+          <textarea className={styles.input} rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} maxLength={500} required={!approve} />
+        </Field>
+        <ErrorBox text={error} />
+        <button type="submit" className={approve ? styles.approveBtn : styles.rejectBtn} disabled={busy}>
+          {busy ? 'Saving…' : approve ? 'Confirm approval' : 'Confirm rejection'}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
+function RequestCard({ r, showStudent, showAdvisor, showStepper, children }) {
+  const st = STATUS[r.status] || { label: r.status, tone: 'pending' };
+  return (
+    <article className={styles.card}>
+      <header className={styles.cardHeader}>
+        <div>
+          <div className={styles.metaRow}>
+            <span className={styles.chip}>{r.eventType}</span>
+            <span className={styles.chip}>{r.submissionType === 'TEAM' ? 'Team' : 'Solo'}</span>
+            <span className={styles.idText}>{r.id}</span>
+          </div>
+          <h4 className={styles.cardEvent}>{r.eventName}</h4>
+          <p className={styles.muted}>
+            {fmtDate(r.eventDate)}
+            {r.eventDay ? ` (${r.eventDay})` : ''}
+            {showStudent && ` · ${r.studentName} (${r.rollNumber}) · Year ${r.year} Sec ${r.section}`}
+            {showAdvisor && ` · Advisor: ${r.advisorName}`}
+            {!showStudent && ` · Advisor: ${r.advisorName}`}
+          </p>
+        </div>
+        <span className={`${styles.status} ${styles[`status_${st.tone}`]}`}>{st.label}</span>
+      </header>
+
+      <p className={styles.desc}>{r.description}</p>
+      {r.teamMembers?.length > 0 && <p className={styles.muted}>Team: {r.teamMembers.join(', ')}</p>}
+
+      {showStepper && <Stepper r={r} />}
+
+      {(r.advisorRemarks || r.hodRemarks) && (
+        <div className={styles.remarks}>
+          {r.advisorRemarks && <p><strong>Advisor:</strong> {r.advisorRemarks}</p>}
+          {r.hodRemarks && <p><strong>HOD:</strong> {r.hodRemarks}</p>}
+        </div>
+      )}
+      {r.resultStatus && r.resultStatus !== 'PENDING' && (
+        <p className={styles.result}>
+          {r.resultStatus === 'WON' ? '🏆 Won' : '🎖️ Participated'} · {r.resultProjectName}
+          {r.resultDescription ? ` · ${r.resultDescription}` : ''}
+        </p>
+      )}
+      {children && <div className={styles.actions}>{children}</div>}
+    </article>
+  );
+}
+
+function Stepper({ r }) {
+  const s = r.status;
+  const steps = [
+    { label: 'Submitted', state: 'done' },
+    {
+      label: 'Advisor',
+      state: s === 'PENDING_ADVISOR' ? 'active' : s === 'REJECTED_ADVISOR' ? 'rejected' : 'done',
+    },
+    {
+      label: 'HOD',
+      state: s === 'APPROVED' ? 'done' : s === 'REJECTED_HOD' ? 'rejected' : s === 'APPROVED_BY_ADVISOR' ? 'active' : 'todo',
+    },
+  ];
+  return (
+    <ol className={styles.stepper}>
+      {steps.map((st, i) => (
+        <li key={st.label} className={`${styles.step} ${styles[`step_${st.state}`]}`}>
+          <span className={styles.stepDot}>{st.state === 'done' ? '✓' : st.state === 'rejected' ? '✕' : i + 1}</span>
+          {st.label}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function TopBar({ subtitle = 'Department of Information Technology', children }) {
+  return (
+    <header className={styles.topNav}>
+      <div className={styles.topNavInner}>
+        <Link href="/" className={styles.brandGroup}>
+          <img src="/college_logo.png" alt="SMVEC logo" className={styles.brandLogo} />
+          <span className={styles.brandInfo}>
+            <span className={styles.brandTitle}>SMVEC OD PORTAL</span>
+            <span className={styles.brandSubtitle}>{subtitle}</span>
+          </span>
+        </Link>
+        <div className={styles.navActions}>{children}</div>
+      </div>
+    </header>
+  );
+}
+
+function Tabs({ value, onChange, items }) {
+  return (
+    <div className={styles.tabs} role="tablist">
+      {items.map(([v, label]) => (
+        <button key={v} type="button" role="tab" aria-selected={value === v} className={value === v ? styles.tabActive : ''} onClick={() => onChange(v)}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Modal({ title, onClose, children }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className={styles.modalBackdrop} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className={styles.modalBox} role="dialog" aria-modal="true" aria-label={title}>
+        <div className={styles.modalHeader}>
+          <h3 className={styles.modalTitle}>{title}</h3>
+          <button type="button" className={styles.closeBtn} onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Wraps a single control in a <label>; use `group` for multi-control fields.
+function Field({ label, group, children }) {
+  const Tag = group ? 'div' : 'label';
+  return (
+    <Tag className={styles.field}>
+      <span className={styles.label}>{label}</span>
+      {children}
+    </Tag>
+  );
+}
+
+function Kpi({ label, value }) {
+  return (
+    <div className={styles.kpi}>
+      <span className={styles.kpiValue}>{value}</span>
+      <span className={styles.kpiLabel}>{label}</span>
+    </div>
+  );
+}
+
+function Empty({ text, action }) {
+  return (
+    <div className={styles.empty}>
+      <p>{text}</p>
+      {action}
+    </div>
+  );
+}
+
+function ErrorBox({ text }) {
+  if (!text) return null;
+  return <div className={styles.error} role="alert">{text}</div>;
 }

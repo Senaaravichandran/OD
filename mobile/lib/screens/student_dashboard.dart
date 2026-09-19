@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/od_request.dart';
 import '../models/user.dart';
+import '../services/api_client.dart';
 import '../services/od_service.dart';
+import '../utils/validators.dart';
 
 class StudentDashboard extends StatefulWidget {
   final AppUser user;
@@ -62,12 +64,11 @@ class _StudentDashboardState extends State<StudentDashboard> {
     const primaryBlue = Color(0xFF3350B0);
     const goldAccent = Color(0xFFD4A429);
 
-    final myRequests = _odService.allRequests
-        .where((r) => r.rollNumber == widget.user.rollNumber || r.studentName == widget.user.name)
-        .toList();
+    // The server only returns this student's own requests.
+    final myRequests = _odService.allRequests;
 
-    final approvedCount = myRequests.where((r) => r.status == 'APPROVED').length;
-    final pendingCount = myRequests.where((r) => r.status == 'PENDING_ADVISOR' || r.status == 'FORWARDED_HOD').length;
+    final approvedCount = myRequests.where((r) => r.isApproved).length;
+    final pendingCount = myRequests.where((r) => r.isPendingAdvisor || r.isPendingHod).length;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF6F8FD),
@@ -103,9 +104,19 @@ class _StudentDashboardState extends State<StudentDashboard> {
           ),
         ],
       ),
-      body: ListView(
+      body: RefreshIndicator(
+        onRefresh: _odService.refresh,
+        child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
         children: [
+          if (_odService.lastError != null)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: const Color(0xFFFEF2F2), borderRadius: BorderRadius.circular(8)),
+              child: Text(_odService.lastError!, style: const TextStyle(fontSize: 12, color: Color(0xFFB91C1C))),
+            ),
           // Profile Banner
           Container(
             padding: const EdgeInsets.all(18),
@@ -118,7 +129,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
               borderRadius: BorderRadius.circular(16),
               boxShadow: [
                 BoxShadow(
-                  color: primaryBlue.withOpacity(0.25),
+                  color: primaryBlue.withValues(alpha: 0.25),
                   blurRadius: 16,
                   offset: const Offset(0, 6),
                 ),
@@ -130,7 +141,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
                   radius: 28,
                   backgroundColor: goldAccent,
                   child: Text(
-                    widget.user.name.substring(0, 1),
+                    widget.user.name.isEmpty ? '?' : widget.user.name.substring(0, 1).toUpperCase(),
                     style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
                   ),
                 ),
@@ -145,7 +156,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Roll: ${widget.user.rollNumber ?? "21IT101"} · Year ${widget.user.year ?? 3} - Sec ${widget.user.section ?? "A"}',
+                        'Reg No: ${widget.user.rollNumber ?? "-"} · ${yearLabel(widget.user.year ?? 0)} - Sec ${widget.user.section ?? "-"}',
                         style: const TextStyle(fontSize: 13, color: Color(0xFFE0E7FF)),
                       ),
                       Text(
@@ -195,13 +206,16 @@ class _StudentDashboardState extends State<StudentDashboard> {
             Container(
               padding: const EdgeInsets.all(32),
               alignment: Alignment.center,
-              child: const Text('No OD applications yet. Tap + to apply!'),
+              child: _odService.isLoading
+                  ? const CircularProgressIndicator()
+                  : const Text('No OD applications yet. Tap + to apply!'),
             )
           else
             ...myRequests.map((req) => _buildRequestCard(req, primaryBlue, goldAccent)),
 
           const SizedBox(height: 60),
         ],
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: primaryBlue,
@@ -245,14 +259,14 @@ class _StudentDashboardState extends State<StudentDashboard> {
         statusLabel = 'HOD Approved ✓';
         statusIcon = Icons.verified;
         break;
-      case 'FORWARDED_HOD':
+      case 'APPROVED_BY_ADVISOR':
         statusColor = const Color(0xFF2563EB);
-        statusLabel = 'Forwarded to HOD';
+        statusLabel = 'Advisor Approved · Waiting for HOD';
         statusIcon = Icons.forward_to_inbox;
         break;
       case 'PENDING_ADVISOR':
         statusColor = const Color(0xFFD97706);
-        statusLabel = 'Under Advisor Review';
+        statusLabel = 'Waiting for ${req.advisorName}';
         statusIcon = Icons.access_time;
         break;
       case 'REJECTED_ADVISOR':
@@ -275,7 +289,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
         border: Border.all(color: const Color(0xFFE5E7EB)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.03),
+            color: Colors.black.withValues(alpha: 0.03),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -293,7 +307,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: primaryBlue.withOpacity(0.08),
+                    color: primaryBlue.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Icon(Icons.event_note, color: primaryBlue, size: 22),
@@ -355,6 +369,19 @@ class _StudentDashboardState extends State<StudentDashboard> {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          const Icon(Icons.assignment_ind_outlined, size: 14, color: Color(0xFF6B7280)),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              'Advisor: ${req.advisorName}',
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -381,15 +408,15 @@ class _StudentDashboardState extends State<StudentDashboard> {
                 Row(
                   children: [
                     _buildStepIcon(1, 'Submitted', true, true),
-                    _buildStepDivider(req.status != 'PENDING_ADVISOR'),
+                    _buildStepDivider(!req.isPendingAdvisor),
                     _buildStepIcon(
                       2,
                       'Advisor Review',
-                      req.status != 'PENDING_ADVISOR' || req.status == 'REJECTED_ADVISOR',
-                      req.status == 'FORWARDED_HOD' || req.status == 'APPROVED',
+                      true,
+                      req.isPendingHod || req.isApproved || req.status == 'REJECTED_HOD',
                       isRejected: req.status == 'REJECTED_ADVISOR',
                     ),
-                    _buildStepDivider(req.status == 'APPROVED'),
+                    _buildStepDivider(req.isApproved || req.status == 'REJECTED_HOD'),
                     _buildStepIcon(
                       3,
                       'HOD Sanction',
@@ -465,15 +492,19 @@ class _StudentDashboardState extends State<StudentDashboard> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(
-                  children: [
-                    Icon(statusIcon, size: 16, color: statusColor),
-                    const SizedBox(width: 6),
-                    Text(
-                      statusLabel,
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: statusColor),
-                    ),
-                  ],
+                Expanded(
+                  child: Row(
+                    children: [
+                      Icon(statusIcon, size: 16, color: statusColor),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          statusLabel,
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: statusColor),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 if (req.status == 'APPROVED')
                   if (req.resultStatus != 'PENDING')
@@ -580,6 +611,11 @@ class _NewODSheetState extends State<_NewODSheet> {
   final List<TextEditingController> _teamMemberControllers = [];
   DateTime _eventDate = DateTime.now().add(const Duration(days: 3));
 
+  List<AdvisorInfo>? _advisors;
+  String? _advisorEmail;
+  String? _advisorError;
+  bool _submitting = false;
+
   final List<String> _eventTypes = [
     'Hackathon',
     'Internship',
@@ -593,36 +629,63 @@ class _NewODSheetState extends State<_NewODSheet> {
   @override
   void initState() {
     super.initState();
-    _teamMemberControllers.add(TextEditingController(text: '${widget.user.name} (${widget.user.rollNumber ?? "21IT101"})'));
+    _teamMemberControllers.add(TextEditingController(text: '${widget.user.name} (${widget.user.rollNumber ?? ""})'));
+    _loadAdvisors();
+  }
+
+  @override
+  void dispose() {
+    _eventNameController.dispose();
+    _descController.dispose();
+    for (final c in _teamMemberControllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _loadAdvisors({bool force = false}) async {
+    setState(() => _advisorError = null);
+    try {
+      final list = await widget.odService.fetchAdvisors(force: force);
+      if (!mounted) return;
+      // Put the student's own class advisor(s) first and pre-select when there is exactly one.
+      final mine = list.where((a) => a.year == widget.user.year && a.section == widget.user.section).toList();
+      final others = list.where((a) => !mine.contains(a)).toList();
+      setState(() {
+        _advisors = [...mine, ...others];
+        if (_advisorEmail == null && mine.length == 1) _advisorEmail = mine.first.email;
+      });
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _advisorError = e.message);
+    }
   }
 
   void _addMember() {
     if (_teamMemberControllers.length < 5) {
-      setState(() {
-        _teamMemberControllers.add(TextEditingController());
-      });
+      setState(() => _teamMemberControllers.add(TextEditingController()));
     }
   }
 
   void _removeMember(int index) {
     if (_teamMemberControllers.length > 1) {
-      setState(() {
-        _teamMemberControllers.removeAt(index);
-      });
+      setState(() => _teamMemberControllers.removeAt(index).dispose());
     }
   }
 
-  String _calculateDay(DateTime date) {
-    return DateFormat('EEEE').format(date);
-  }
+  String _calculateDay(DateTime date) => DateFormat('EEEE').format(date);
 
-  void _handleSubmit() {
+  Future<void> _handleSubmit() async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (_advisorEmail == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('Please select your Class Advisor')));
+      return;
+    }
     if (_eventNameController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter Event Name')));
+      messenger.showSnackBar(const SnackBar(content: Text('Please enter Event Name')));
       return;
     }
     if (_descController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter Description')));
+      messenger.showSnackBar(const SnackBar(content: Text('Please enter Description')));
       return;
     }
 
@@ -630,26 +693,73 @@ class _NewODSheetState extends State<_NewODSheet> {
         ? _teamMemberControllers.map((c) => c.text.trim()).where((t) => t.isNotEmpty).toList()
         : <String>[];
 
-    widget.odService.submitRequest(
-      studentName: widget.user.name,
-      rollNumber: widget.user.rollNumber ?? '21IT101',
-      year: widget.user.year ?? 3,
-      section: widget.user.section ?? 'A',
-      submissionType: _submissionType,
-      teamMembers: members,
-      eventType: _eventType,
-      eventName: _eventNameController.text.trim(),
-      eventDate: _eventDate,
-      eventDay: _calculateDay(_eventDate),
-      description: _descController.text.trim(),
-      attachmentName: 'Event_Proof_${DateTime.now().millisecondsSinceEpoch}.pdf',
-    );
+    setState(() => _submitting = true);
+    try {
+      await widget.odService.submitRequest(
+        advisorEmail: _advisorEmail!,
+        submissionType: _submissionType,
+        teamMembers: members,
+        eventType: _eventType,
+        eventName: _eventNameController.text.trim(),
+        eventDate: _eventDate,
+        eventDay: _calculateDay(_eventDate),
+        description: _descController.text.trim(),
+      );
+      if (!mounted) return;
+      Navigator.pop(context);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('OD Request submitted! Sent to your Class Advisor for review.'),
+          backgroundColor: Color(0xFF059669),
+        ),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      messenger.showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent));
+    }
+  }
 
-    Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('OD Request submitted! Sent to Class Advisor for initial review.'),
-        backgroundColor: Color(0xFF059669),
+  Widget _buildAdvisorPicker() {
+    if (_advisorError != null) {
+      return Row(
+        children: [
+          Expanded(child: Text(_advisorError!, style: const TextStyle(fontSize: 12, color: Color(0xFFB91C1C)))),
+          TextButton(onPressed: () => _loadAdvisors(force: true), child: const Text('Retry')),
+        ],
+      );
+    }
+    final advisors = _advisors;
+    if (advisors == null) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: LinearProgressIndicator(),
+      );
+    }
+    if (advisors.isEmpty) {
+      return const Text(
+        'No class advisors have registered yet. Please ask your advisor to sign in to the app first.',
+        style: TextStyle(fontSize: 12, color: Color(0xFFB45309)),
+      );
+    }
+    return DropdownButtonFormField<String>(
+      initialValue: _advisorEmail,
+      isExpanded: true,
+      hint: const Text('Select your Class Advisor'),
+      items: advisors
+          .map((a) => DropdownMenuItem(
+                value: a.email,
+                child: Text(
+                  '${a.name} · ${yearLabel(a.year)} ${a.section} (${a.batch})',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ))
+          .toList(),
+      onChanged: (val) => setState(() => _advisorEmail = val),
+      decoration: InputDecoration(
+        prefixIcon: const Icon(Icons.assignment_ind_outlined, size: 18),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
       ),
     );
   }
@@ -687,6 +797,11 @@ class _NewODSheetState extends State<_NewODSheet> {
             const Divider(),
             const SizedBox(height: 12),
 
+            const Text('Class Advisor', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            _buildAdvisorPicker(),
+            const SizedBox(height: 14),
+
             // Solo / Team Toggle
             const Text('Participation Type', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
@@ -695,7 +810,7 @@ class _NewODSheetState extends State<_NewODSheet> {
                 Expanded(
                   child: OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
-                      backgroundColor: _submissionType == 'SOLO' ? primaryBlue.withOpacity(0.08) : Colors.transparent,
+                      backgroundColor: _submissionType == 'SOLO' ? primaryBlue.withValues(alpha: 0.08) : Colors.transparent,
                       side: BorderSide(color: _submissionType == 'SOLO' ? primaryBlue : const Color(0xFFD1D5DB), width: 1.5),
                     ),
                     icon: const Icon(Icons.person, size: 18),
@@ -707,7 +822,7 @@ class _NewODSheetState extends State<_NewODSheet> {
                 Expanded(
                   child: OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
-                      backgroundColor: _submissionType == 'TEAM' ? primaryBlue.withOpacity(0.08) : Colors.transparent,
+                      backgroundColor: _submissionType == 'TEAM' ? primaryBlue.withValues(alpha: 0.08) : Colors.transparent,
                       side: BorderSide(color: _submissionType == 'TEAM' ? primaryBlue : const Color(0xFFD1D5DB), width: 1.5),
                     ),
                     icon: const Icon(Icons.groups, size: 18),
@@ -742,7 +857,7 @@ class _NewODSheetState extends State<_NewODSheet> {
                         child: TextField(
                           controller: ctrl,
                           decoration: InputDecoration(
-                            hintText: 'Member ${idx + 1} Name & Roll No',
+                            hintText: 'Member ${idx + 1} Name & Register No',
                             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                           ),
@@ -763,9 +878,9 @@ class _NewODSheetState extends State<_NewODSheet> {
             const Text('Event Type', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
             const SizedBox(height: 6),
             DropdownButtonFormField<String>(
-              value: _eventType,
+              initialValue: _eventType,
               items: _eventTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
-              onChanged: (val) => setState(() => _eventType = val!),
+              onChanged: (val) => setState(() => _eventType = val ?? _eventType),
               decoration: InputDecoration(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
@@ -789,11 +904,12 @@ class _NewODSheetState extends State<_NewODSheet> {
             const SizedBox(height: 6),
             InkWell(
               onTap: () async {
+                final today = DateTime.now();
                 final picked = await showDatePicker(
                   context: context,
                   initialDate: _eventDate,
-                  firstDate: DateTime.now(),
-                  lastDate: DateTime.now().add(const Duration(days: 180)),
+                  firstDate: DateTime(today.year, today.month, today.day),
+                  lastDate: today.add(const Duration(days: 180)),
                 );
                 if (picked != null) setState(() => _eventDate = picked);
               },
@@ -839,8 +955,10 @@ class _NewODSheetState extends State<_NewODSheet> {
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
-                onPressed: _handleSubmit,
-                child: const Text('Submit for Advisor Review', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                onPressed: _submitting ? null : _handleSubmit,
+                child: _submitting
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Submit to Class Advisor', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
               ),
             ),
           ],
@@ -865,6 +983,34 @@ class _ResultSubmissionSheetState extends State<_ResultSubmissionSheet> {
   String _resultStatus = 'WON';
   final _projectNameCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _projectNameCtrl.dispose();
+    _descCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _submitting = true);
+    try {
+      await widget.odService.submitResult(
+        widget.request.id,
+        _projectNameCtrl.text.trim().isEmpty ? widget.request.eventName : _projectNameCtrl.text.trim(),
+        _descCtrl.text.trim(),
+        _resultStatus,
+      );
+      if (!mounted) return;
+      Navigator.pop(context);
+      messenger.showSnackBar(const SnackBar(content: Text('Result submitted successfully!')));
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      messenger.showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -945,20 +1091,10 @@ class _ResultSubmissionSheetState extends State<_ResultSubmissionSheet> {
               height: 48,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: primaryBlue, foregroundColor: Colors.white),
-                onPressed: () {
-                  widget.odService.submitResult(
-                    widget.request.id,
-                    _projectNameCtrl.text.isEmpty ? widget.request.eventName : _projectNameCtrl.text,
-                    _descCtrl.text,
-                    _resultStatus,
-                    'Certificate_${widget.request.id}.pdf',
-                  );
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Result submitted successfully! Saved in college records.')),
-                  );
-                },
-                child: const Text('Save Event Results', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: _submitting ? null : _save,
+                child: _submitting
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Save Event Results', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ),
           ],
