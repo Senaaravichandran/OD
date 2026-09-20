@@ -1,3 +1,5 @@
+import 'package:app_links/app_links.dart';
+import 'package:clerk_auth/clerk_auth.dart' as clerk;
 import 'package:clerk_flutter/clerk_flutter.dart';
 import 'package:flutter/material.dart';
 
@@ -24,6 +26,20 @@ Future<void> main() async {
 class SMVECODApp extends StatelessWidget {
   const SMVECODApp({super.key});
 
+  /// Where Google should send the user back to once they have signed in.
+  ///
+  /// Returning a link here makes the Clerk SDK open the sign-in page in the
+  /// device browser instead of an in-app WebView. That matters: Google refuses
+  /// OAuth from embedded WebViews ("this browser or app may not be secure"),
+  /// so the WebView route works on some devices and silently stalls on others.
+  /// The scheme is registered in AndroidManifest.xml and Info.plist.
+  static Uri? _redirect(BuildContext context, clerk.Strategy strategy) {
+    if (strategy.isOauth || strategy.isEmailLink) {
+      return Uri(scheme: 'smvecod', host: 'auth', path: '/callback');
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     const primaryBlue = Color(0xFF3350B0);
@@ -31,7 +47,15 @@ class SMVECODApp extends StatelessWidget {
 
     // Clerk owns Google sign-in for the whole app, so it wraps everything.
     return ClerkAuth(
-      config: ClerkAuthConfig(publishableKey: AppConfig.clerkPublishableKey),
+      config: ClerkAuthConfig(
+        publishableKey: AppConfig.clerkPublishableKey,
+        redirectionGenerator: _redirect,
+        // Carries the browser's callback back into the SDK so the session is
+        // picked up when the user returns to the app.
+        deepLinkStream: AppLinks().uriLinkStream.where(
+              (uri) => uri.scheme == 'smvecod',
+            ),
+      ),
       child: MaterialApp(
         title: 'SMVEC OD Management',
         debugShowCheckedModeBanner: false,
