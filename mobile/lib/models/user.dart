@@ -8,6 +8,8 @@ class AppUser {
   final int? year;
   final String? section;
   final String? batch; // Staff only, e.g. "2023-2027"
+  final String? advisorEmail; // Student only: their permanent class advisor
+  final String? advisorName;
   final String department;
   final String token;
 
@@ -20,6 +22,8 @@ class AppUser {
     this.year,
     this.section,
     this.batch,
+    this.advisorEmail,
+    this.advisorName,
     this.department = 'Information Technology',
   });
 
@@ -45,6 +49,8 @@ class AppUser {
       year: (json['year'] as num?)?.toInt(),
       section: json['section']?.toString(),
       batch: json['batch']?.toString(),
+      advisorEmail: json['advisorEmail']?.toString(),
+      advisorName: json['advisorName']?.toString(),
       department: json['department']?.toString() ?? 'Information Technology',
     );
   }
@@ -57,10 +63,19 @@ class AppUser {
         'year': year,
         'section': section,
         'batch': batch,
+        'advisorEmail': advisorEmail,
+        'advisorName': advisorName,
         'department': department,
       };
 
-  AppUser copyWith({int? year, String? section, String? batch}) => AppUser(
+  AppUser copyWith({
+    int? year,
+    String? section,
+    String? batch,
+    String? advisorEmail,
+    String? advisorName,
+  }) =>
+      AppUser(
         name: name,
         email: email,
         role: role,
@@ -69,6 +84,8 @@ class AppUser {
         year: year ?? this.year,
         section: section ?? this.section,
         batch: batch ?? this.batch,
+        advisorEmail: advisorEmail ?? this.advisorEmail,
+        advisorName: advisorName ?? this.advisorName,
         department: department,
       );
 

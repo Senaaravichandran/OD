@@ -4,15 +4,20 @@ import 'package:flutter/material.dart';
 import 'config/app_config.dart';
 import 'models/user.dart';
 import 'screens/advisor_dashboard.dart';
+import 'screens/auth_screen.dart';
 import 'screens/hod_dashboard.dart';
 import 'screens/login_screen.dart';
 import 'screens/notifications_sheet.dart';
+import 'screens/registration_screen.dart';
+import 'screens/role_picker_screen.dart';
 import 'screens/student_dashboard.dart';
+import 'services/notification_service.dart';
 import 'services/od_service.dart';
 import 'services/session_service.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await NotificationService.init();
   runApp(const SMVECODApp());
 }
 
@@ -24,7 +29,7 @@ class SMVECODApp extends StatelessWidget {
     const primaryBlue = Color(0xFF3350B0);
     const goldAccent = Color(0xFFD4A429);
 
-    // Clerk owns sign-in for the whole app, so it wraps everything.
+    // Clerk owns Google sign-in for the whole app, so it wraps everything.
     return ClerkAuth(
       config: ClerkAuthConfig(publishableKey: AppConfig.clerkPublishableKey),
       child: MaterialApp(
@@ -42,26 +47,29 @@ class SMVECODApp extends StatelessWidget {
           scaffoldBackgroundColor: const Color(0xFFF6F8FD),
           fontFamily: 'Roboto',
         ),
-        home: const _AuthGate(),
+        home: const _AppGate(),
       ),
     );
   }
 }
 
-/// Decides what to show based on the Clerk session.
+/// Drives the whole sign-in journey:
 ///
-/// Signed out -> Clerk's own sign-in UI. Signed in -> [LoginScreen] trades the
-/// Clerk session for an app session (and collects a profile the first time),
-/// after which the role dashboards take over.
-class _AuthGate extends StatefulWidget {
-  const _AuthGate();
+///   role picker -> per-role sign-in -> (first time) profile -> dashboard
+///
+/// The chosen role only decides which sign-in options to show. What someone can
+/// actually do comes from the profile the server returns.
+class _AppGate extends StatefulWidget {
+  const _AppGate();
 
   @override
-  State<_AuthGate> createState() => _AuthGateState();
+  State<_AppGate> createState() => _AppGateState();
 }
 
-class _AuthGateState extends State<_AuthGate> {
+class _AppGateState extends State<_AppGate> {
   AppUser? _currentUser;
+  UserRole? _pickedRole;
+  ({String email, String regToken, UserRole role})? _pendingProfile;
   bool _restoring = true;
 
   @override
@@ -84,7 +92,12 @@ class _AuthGateState extends State<_AuthGate> {
   Future<void> _onLogin(AppUser user) async {
     await SessionService.saveUser(user);
     ODService().setUser(user);
-    if (mounted) setState(() => _currentUser = user);
+    if (mounted) {
+      setState(() {
+        _currentUser = user;
+        _pendingProfile = null;
+      });
+    }
   }
 
   Future<void> _onUserUpdated(AppUser user) async {
@@ -92,25 +105,36 @@ class _AuthGateState extends State<_AuthGate> {
     if (mounted) setState(() => _currentUser = user);
   }
 
-  /// Clears the app session. Clerk's own session is signed out separately by
-  /// whichever widget triggered this.
-  Future<void> _clearAppSession() async {
+  /// Drops the app session and returns to the role picker. Clerk's own session
+  /// is signed out too when one exists.
+  Future<void> _signOut(ClerkAuthState? authState) async {
     await SessionService.clear();
+    await NotificationService.reset();
     ODService().setUser(null);
-    if (mounted) setState(() => _currentUser = null);
-  }
-
-  Future<void> _onLogout(ClerkAuthState authState) async {
-    await _clearAppSession();
-    await authState.signOut();
+    if (mounted) {
+      setState(() {
+        _currentUser = null;
+        _pickedRole = null;
+        _pendingProfile = null;
+      });
+    }
+    if (authState != null && authState.isSignedIn) {
+      await authState.signOut();
+    }
   }
 
   void _onSessionExpired() {
     if (_currentUser == null) return;
-    _clearAppSession();
+    SessionService.clear();
+    ODService().setUser(null);
     if (mounted) {
+      setState(() {
+        _currentUser = null;
+        _pickedRole = null;
+        _pendingProfile = null;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Your session has expired. Please log in again.')),
+        const SnackBar(content: Text('Your session has expired. Please sign in again.')),
       );
     }
   }
@@ -132,42 +156,83 @@ class _AuthGateState extends State<_AuthGate> {
 
     return ClerkErrorListener(
       child: ClerkAuthBuilder(
-        signedOutBuilder: (context, authState) {
-          // The app session cannot outlive the Clerk session.
-          if (_currentUser != null) {
-            WidgetsBinding.instance.addPostFrameCallback((_) => _clearAppSession());
-          }
-          return const Scaffold(body: SafeArea(child: ClerkAuthentication()));
-        },
-        signedInBuilder: (context, authState) {
-          final user = _currentUser;
-          if (user == null) {
-            return LoginScreen(authState: authState, onLogin: _onLogin);
-          }
-
-          switch (user.role) {
-            case UserRole.student:
-              return StudentDashboard(
-                user: user,
-                onLogout: () => _onLogout(authState),
-                onOpenNotifications: () => _showNotifications(context),
-              );
-            case UserRole.advisor:
-              return AdvisorDashboard(
-                user: user,
-                onLogout: () => _onLogout(authState),
-                onUserUpdated: _onUserUpdated,
-                onOpenNotifications: () => _showNotifications(context),
-              );
-            case UserRole.hod:
-              return HodDashboard(
-                user: user,
-                onLogout: () => _onLogout(authState),
-                onOpenNotifications: () => _showNotifications(context),
-              );
-          }
-        },
+        signedOutBuilder: (context, authState) => _buildFlow(context, authState, false),
+        signedInBuilder: (context, authState) => _buildFlow(context, authState, true),
       ),
     );
+  }
+
+  Widget _buildFlow(BuildContext context, ClerkAuthState authState, bool clerkSignedIn) {
+    // Already through the door.
+    final user = _currentUser;
+    if (user != null) return _dashboard(user, authState);
+
+    // First sign-in: finish the profile.
+    final pending = _pendingProfile;
+    if (pending != null) {
+      return RegistrationScreen(
+        email: pending.email,
+        regToken: pending.regToken,
+        initialRole: pending.role,
+        onRegistered: _onLogin,
+        onCancel: () => _signOut(authState),
+      );
+    }
+
+    // Signed in with Google but no app session yet: exchange the Clerk token.
+    if (clerkSignedIn) {
+      return LoginScreen(
+        authState: authState,
+        onLogin: _onLogin,
+        onNeedsRegistration: (email, regToken) => setState(
+          () => _pendingProfile = (
+            email: email,
+            regToken: regToken,
+            role: _pickedRole ?? UserRole.student,
+          ),
+        ),
+        onSignOut: () => _signOut(authState),
+      );
+    }
+
+    // Not signed in anywhere: pick a role, then a sign-in method.
+    final role = _pickedRole;
+    if (role == null) {
+      return RolePickerScreen(onPick: (r) => setState(() => _pickedRole = r));
+    }
+
+    return AuthScreen(
+      role: role,
+      onSignedIn: _onLogin,
+      onNeedsRegistration: (email, regToken, pickedRole) => setState(
+        () => _pendingProfile = (email: email, regToken: regToken, role: pickedRole),
+      ),
+      onBack: () => setState(() => _pickedRole = null),
+    );
+  }
+
+  Widget _dashboard(AppUser user, ClerkAuthState authState) {
+    switch (user.role) {
+      case UserRole.student:
+        return StudentDashboard(
+          user: user,
+          onLogout: () => _signOut(authState),
+          onUserUpdated: _onUserUpdated,
+          onOpenNotifications: () => _showNotifications(context),
+        );
+      case UserRole.advisor:
+        return AdvisorDashboard(
+          user: user,
+          onLogout: () => _signOut(authState),
+          onUserUpdated: _onUserUpdated,
+          onOpenNotifications: () => _showNotifications(context),
+        );
+      case UserRole.hod:
+        return HodDashboard(
+          user: user,
+          onLogout: () => _signOut(authState),
+          onOpenNotifications: () => _showNotifications(context),
+        );
+    }
   }
 }

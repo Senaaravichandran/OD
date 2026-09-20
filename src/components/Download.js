@@ -42,7 +42,7 @@ export default function Download() {
                 Launch Web Portal
               </a>
               <div className={styles.appInfo}>
-                <span className={styles.appInfoItem}>📦 Real Android APK (v2.0.0)</span>
+                <span className={styles.appInfoItem}>📦 Real Android APK (v2.1.0)</span>
                 <span className={styles.appInfoItem}>📱 Android 8.0+ Compatible</span>
                 <span className={styles.appInfoItem}>💾 Direct High-Speed Download (~56 MB)</span>
               </div>

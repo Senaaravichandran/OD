@@ -10,12 +10,14 @@ class StudentDashboard extends StatefulWidget {
   final AppUser user;
   final VoidCallback onLogout;
   final VoidCallback onOpenNotifications;
+  final Future<void> Function(AppUser user) onUserUpdated;
 
   const StudentDashboard({
     super.key,
     required this.user,
     required this.onLogout,
     required this.onOpenNotifications,
+    required this.onUserUpdated,
   });
 
   @override
@@ -48,6 +50,80 @@ class _StudentDashboardState extends State<StudentDashboard> {
       backgroundColor: Colors.transparent,
       builder: (ctx) => _NewODSheet(user: widget.user, odService: _odService),
     );
+  }
+
+  /// Lets a student fix a class advisor they picked wrongly at registration.
+  /// Requests already filed stay with the advisor who received them.
+  Future<void> _openAdvisorSheet() async {
+    final messenger = ScaffoldMessenger.of(context);
+    List<AdvisorInfo> advisors;
+    try {
+      advisors = await _odService.fetchAdvisors(force: true);
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent));
+      return;
+    }
+    if (!mounted) return;
+
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Choose your class advisor',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                'New OD requests will go to this advisor. Requests you have already '
+                'sent stay with the advisor who received them.',
+                style: TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  if (advisors.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text('No class advisors have registered yet.'),
+                    ),
+                  for (final a in advisors)
+                    ListTile(
+                      title: Text(a.name),
+                      subtitle: Text('${yearLabel(a.year)} · Section ${a.section}'),
+                      trailing: a.email == widget.user.advisorEmail
+                          ? const Icon(Icons.check_circle, color: Color(0xFF059669))
+                          : null,
+                      onTap: () => Navigator.pop(ctx, a.email),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (chosen == null || chosen == widget.user.advisorEmail) return;
+    try {
+      final updated = await _odService.changeAdvisor(chosen);
+      await widget.onUserUpdated(updated);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Class advisor updated.'), backgroundColor: Color(0xFF059669)),
+      );
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent));
+    }
   }
 
   void _openResultModal(ODRequest request) {
@@ -162,6 +238,27 @@ class _StudentDashboardState extends State<StudentDashboard> {
                       Text(
                         widget.user.department,
                         style: TextStyle(fontSize: 12, color: goldAccent, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      // The advisor is fixed, but a wrong first choice can be
+                      // corrected here.
+                      InkWell(
+                        onTap: _openAdvisorSheet,
+                        child: Row(
+                          children: [
+                            const Icon(Icons.assignment_ind_outlined, size: 13, color: Color(0xFFE0E7FF)),
+                            const SizedBox(width: 5),
+                            Flexible(
+                              child: Text(
+                                widget.user.advisorName ?? 'Set your class advisor',
+                                style: const TextStyle(fontSize: 12, color: Color(0xFFE0E7FF)),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            const Icon(Icons.edit_outlined, size: 12, color: Color(0xFFE0E7FF)),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -611,9 +708,6 @@ class _NewODSheetState extends State<_NewODSheet> {
   final List<TextEditingController> _teamMemberControllers = [];
   DateTime _eventDate = DateTime.now().add(const Duration(days: 3));
 
-  List<AdvisorInfo>? _advisors;
-  String? _advisorEmail;
-  String? _advisorError;
   bool _submitting = false;
 
   final List<String> _eventTypes = [
@@ -630,7 +724,6 @@ class _NewODSheetState extends State<_NewODSheet> {
   void initState() {
     super.initState();
     _teamMemberControllers.add(TextEditingController(text: '${widget.user.name} (${widget.user.rollNumber ?? ""})'));
-    _loadAdvisors();
   }
 
   @override
@@ -641,23 +734,6 @@ class _NewODSheetState extends State<_NewODSheet> {
       c.dispose();
     }
     super.dispose();
-  }
-
-  Future<void> _loadAdvisors({bool force = false}) async {
-    setState(() => _advisorError = null);
-    try {
-      final list = await widget.odService.fetchAdvisors(force: force);
-      if (!mounted) return;
-      // Put the student's own class advisor(s) first and pre-select when there is exactly one.
-      final mine = list.where((a) => a.year == widget.user.year && a.section == widget.user.section).toList();
-      final others = list.where((a) => !mine.contains(a)).toList();
-      setState(() {
-        _advisors = [...mine, ...others];
-        if (_advisorEmail == null && mine.length == 1) _advisorEmail = mine.first.email;
-      });
-    } on ApiException catch (e) {
-      if (mounted) setState(() => _advisorError = e.message);
-    }
   }
 
   void _addMember() {
@@ -676,8 +752,8 @@ class _NewODSheetState extends State<_NewODSheet> {
 
   Future<void> _handleSubmit() async {
     final messenger = ScaffoldMessenger.of(context);
-    if (_advisorEmail == null) {
-      messenger.showSnackBar(const SnackBar(content: Text('Please select your Class Advisor')));
+    if (widget.user.advisorEmail == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('No class advisor is set on your profile.')));
       return;
     }
     if (_eventNameController.text.trim().isEmpty) {
@@ -696,7 +772,6 @@ class _NewODSheetState extends State<_NewODSheet> {
     setState(() => _submitting = true);
     try {
       await widget.odService.submitRequest(
-        advisorEmail: _advisorEmail!,
         submissionType: _submissionType,
         teamMembers: members,
         eventType: _eventType,
@@ -720,46 +795,44 @@ class _NewODSheetState extends State<_NewODSheet> {
     }
   }
 
+  /// The advisor is fixed on the student's profile, so this only shows who the
+  /// request will go to. It is changed from the profile, not per request.
   Widget _buildAdvisorPicker() {
-    if (_advisorError != null) {
-      return Row(
-        children: [
-          Expanded(child: Text(_advisorError!, style: const TextStyle(fontSize: 12, color: Color(0xFFB91C1C)))),
-          TextButton(onPressed: () => _loadAdvisors(force: true), child: const Text('Retry')),
-        ],
-      );
-    }
-    final advisors = _advisors;
-    if (advisors == null) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 8),
-        child: LinearProgressIndicator(),
-      );
-    }
-    if (advisors.isEmpty) {
+    final name = widget.user.advisorName;
+    if (name == null || name.isEmpty) {
       return const Text(
-        'No class advisors have registered yet. Please ask your advisor to sign in to the app first.',
+        'No class advisor is set on your profile. Set one from your profile before raising an OD.',
         style: TextStyle(fontSize: 12, color: Color(0xFFB45309)),
       );
     }
-    return DropdownButtonFormField<String>(
-      initialValue: _advisorEmail,
-      isExpanded: true,
-      hint: const Text('Select your Class Advisor'),
-      items: advisors
-          .map((a) => DropdownMenuItem(
-                value: a.email,
-                child: Text(
-                  '${a.name} · ${yearLabel(a.year)} ${a.section} (${a.batch})',
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1F5F9),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.assignment_ind_outlined, size: 18, color: Color(0xFF3350B0)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
                   overflow: TextOverflow.ellipsis,
                 ),
-              ))
-          .toList(),
-      onChanged: (val) => setState(() => _advisorEmail = val),
-      decoration: InputDecoration(
-        prefixIcon: const Icon(Icons.assignment_ind_outlined, size: 18),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                const Text(
+                  'Your class advisor',
+                  style: TextStyle(fontSize: 11, color: Colors.black54),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

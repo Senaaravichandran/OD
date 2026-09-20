@@ -81,15 +81,17 @@ export default function PortalPage() {
 
   // Trade the Clerk session for an app session as soon as Clerk is ready.
   useEffect(() => {
-    if (!isLoaded) return;
-    if (!isSignedIn) {
-      setSession(null);
-      setPending(null);
-      setBusy(false);
-      return;
-    }
+    if (!isLoaded) return undefined;
     let cancelled = false;
     (async () => {
+      if (!isSignedIn) {
+        if (!cancelled) {
+          setSession(null);
+          setPending(null);
+          setBusy(false);
+        }
+        return;
+      }
       setBusy(true);
       try {
         const clerkToken = await getToken();
@@ -199,10 +201,23 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
   const [role, setRole] = useState('STUDENT');
   const [form, setForm] = useState({ name: '', rollNumber: '', year: '', section: '', batch: currentBatch() });
   const [staffCode, setStaffCode] = useState('');
+  const [advisorEmail, setAdvisorEmail] = useState('');
+  const [advisors, setAdvisors] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const set = (k) => (ev) => setForm((f) => ({ ...f, [k]: ev.target.value }));
+
+  // Needed before the student has a session, so ADVISORS is public.
+  useEffect(() => {
+    let cancelled = false;
+    api('ADVISORS')
+      .then((res) => !cancelled && setAdvisors(res.advisors || []))
+      .catch(() => !cancelled && setAdvisors([]));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const submit = async (ev) => {
     ev.preventDefault();
@@ -210,8 +225,10 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
     setError('');
     try {
       const payload = { role, regToken, name: form.name, year: form.year, section: form.section };
-      if (role === 'STUDENT') payload.rollNumber = form.rollNumber;
-      else {
+      if (role === 'STUDENT') {
+        payload.rollNumber = form.rollNumber;
+        payload.advisorEmail = advisorEmail;
+      } else {
         payload.batch = form.batch;
         payload.staffCode = staffCode;
       }
@@ -258,9 +275,35 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
           </Field>
 
           {role === 'STUDENT' && (
-            <Field label="Register number">
-              <input className={styles.input} value={form.rollNumber} onChange={set('rollNumber')} required maxLength={30} />
-            </Field>
+            <>
+              <Field label="Register number">
+                <input className={styles.input} value={form.rollNumber} onChange={set('rollNumber')} required maxLength={30} />
+              </Field>
+              <Field label="Class advisor">
+                {advisors === null ? (
+                  <p className={styles.muted}>Loading class advisors…</p>
+                ) : advisors.length === 0 ? (
+                  <p className={styles.muted}>
+                    No class advisors have registered yet. Your advisor needs to sign in once
+                    before you can be attached to them.
+                  </p>
+                ) : (
+                  <select
+                    className={styles.input}
+                    value={advisorEmail}
+                    onChange={(ev) => setAdvisorEmail(ev.target.value)}
+                    required
+                  >
+                    <option value="">Select your class advisor</option>
+                    {advisors.map((a) => (
+                      <option key={a.email} value={a.email}>
+                        {a.name} — Year {a.year} {a.section}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+            </>
           )}
 
           <Field label="Year" group>
@@ -476,11 +519,9 @@ function StudentView({ data, ctx }) {
 
 function NewOdModal({ ctx, onClose }) {
   const { user, call, upsert, setToast } = ctx;
-  const [advisors, setAdvisors] = useState(null);
   const [form, setForm] = useState(() => {
     const d = new Date(Date.now() + 3 * 864e5);
     return {
-      advisorEmail: '',
       submissionType: 'SOLO',
       eventType: 'Hackathon',
       eventName: '',
@@ -491,19 +532,6 @@ function NewOdModal({ ctx, onClose }) {
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    call('ADVISORS')
-      .then((res) => {
-        setAdvisors(res.advisors);
-        const own = res.advisors.find((a) => a.year === user.year && a.section === user.section);
-        if (own) setForm((f) => ({ ...f, advisorEmail: own.email }));
-      })
-      .catch((err) => {
-        setAdvisors([]);
-        setError(err.message);
-      });
-  }, [call, user.year, user.section]);
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
@@ -527,15 +555,9 @@ function NewOdModal({ ctx, onClose }) {
   return (
     <Modal title="New OD request" onClose={onClose}>
       <form onSubmit={submit} className={styles.form}>
+        {/* The advisor is fixed on the profile, so this only says where it goes. */}
         <Field label="Class advisor">
-          <select className={styles.input} value={form.advisorEmail} onChange={set('advisorEmail')} required>
-            <option value="">{advisors === null ? 'Loading advisors…' : advisors.length ? 'Select your advisor' : 'No advisors registered yet'}</option>
-            {(advisors || []).map((a) => (
-              <option key={a.email} value={a.email}>
-                {a.name} · Year {a.year} Sec {a.section} ({a.batch})
-              </option>
-            ))}
-          </select>
+          <p className={styles.muted}>{user.advisorName || 'Not set on your profile'}</p>
         </Field>
         <div className={styles.grid2}>
           <Field label="Event type">

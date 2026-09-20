@@ -231,8 +231,19 @@ function publicUser(p) {
     year: p.year || null,
     section: p.section || null,
     batch: p.batch || null,
+    // Students pick their class advisor once, at registration, and every OD
+    // they raise goes to that advisor.
+    advisorEmail: p.advisorEmail || null,
+    advisorName: p.advisorName || null,
     department: 'Information Technology',
   };
+}
+
+// Looks up a registered class advisor by email, or fails with a clear message.
+async function requireAdvisor(email) {
+  const a = parse(await redis().hget(K_USERS, clean(email).toLowerCase()));
+  if (!a || a.role !== 'STAFF') throw new HttpError(400, 'Please choose a registered class advisor.');
+  return a;
 }
 
 function session(profile) {
@@ -285,6 +296,58 @@ async function clerkLogin(req) {
   return { success: true, needsRegistration: true, email, regToken: signRegToken(email) };
 }
 
+// Password sign-in for staff and the HOD.
+//
+// Google (through Clerk) is the primary door for everyone. This second door
+// exists because advisors and the HOD need to get in on shared or borrowed
+// devices, and during testing, without a Google account being involved. It is
+// deliberately not offered to students: their identity has to be a real,
+// Clerk-verified college address, since that is what every OD is filed under.
+async function passwordLogin(p) {
+  const role = clean(p.role).toUpperCase();
+
+  if (role === 'HOD') {
+    checkPassword(p.password, 'HOD_PASSWORD');
+    return session({
+      email: hodEmail(),
+      role: 'HOD',
+      name: clean(process.env.HOD_NAME) || 'Dr. R. RAJU (HOD/IT)',
+    });
+  }
+
+  if (role === 'STAFF') {
+    checkPassword(p.password, 'STAFF_PASSWORD');
+    // The shared code proves "a member of staff"; the email says which one.
+    const email = normEmail(p.email);
+    if (email === hodEmail()) throw new HttpError(400, 'Use the HOD option for this address.');
+    const profile = await getProfile(email);
+    if (profile && profile.role !== 'STAFF') {
+      throw new HttpError(403, 'This email is registered as a student.');
+    }
+    // An advisor signing in this way for the first time still has to fill in
+    // their class details, exactly as they would after signing in with Google.
+    if (!profile) {
+      return { success: true, needsRegistration: true, email, regToken: signRegToken(email) };
+    }
+    return session(profile);
+  }
+
+  throw new HttpError(400, 'Password sign-in is only for staff and the HOD.');
+}
+
+// Lets a student correct a class advisor they picked wrongly. Requests already
+// filed stay with the advisor who received them.
+async function changeAdvisor(auth, p) {
+  requireRole(auth, 'STUDENT');
+  const profile = await getProfile(auth.email);
+  if (!profile) throw new HttpError(404, 'Profile not found.');
+  const advisor = await requireAdvisor(p.advisorEmail);
+  profile.advisorEmail = advisor.email;
+  profile.advisorName = advisor.name;
+  await redis().hset(K_USERS, { [auth.email]: JSON.stringify(profile) });
+  return { success: true, user: publicUser(profile) };
+}
+
 // Completes a first-time profile. The email is not taken from the request
 // body - it comes from the registration token, which only CLERK_LOGIN issues.
 async function register(p) {
@@ -313,6 +376,9 @@ async function register(p) {
     };
   } else if (role === 'STUDENT') {
     if (existing && existing.role !== 'STUDENT') throw new HttpError(403, 'This email is registered as staff.');
+    // The class advisor is chosen once here and then stays fixed, so every OD
+    // this student raises is routed to the same advisor.
+    const advisor = await requireAdvisor(p.advisorEmail);
     profile = {
       email,
       role: 'STUDENT',
@@ -320,6 +386,8 @@ async function register(p) {
       rollNumber: text(p.rollNumber, 'Register number', 30).toUpperCase(),
       year: yearOf(p.year),
       section: sectionOf(p.section),
+      advisorEmail: advisor.email,
+      advisorName: advisor.name,
     };
   } else {
     throw new HttpError(400, 'Unknown role.');
@@ -378,14 +446,12 @@ async function sync(auth) {
 
 async function createOd(auth, p) {
   requireRole(auth, 'STUDENT');
-  const lookup = redis().pipeline();
-  lookup.hget(K_USERS, auth.email);
-  lookup.hget(K_USERS, clean(p.advisorEmail).toLowerCase());
-  const [student, advisor] = await lookup.exec();
-  const s = parse(student);
-  const a = parse(advisor);
+  const s = parse(await redis().hget(K_USERS, auth.email));
   if (!s) throw new HttpError(404, 'Your profile was not found. Please log in again.');
-  if (!a || a.role !== 'STAFF') throw new HttpError(400, 'Please select a registered class advisor.');
+  // The advisor is whoever the student is attached to - not something the
+  // client gets to choose per request.
+  if (!s.advisorEmail) throw new HttpError(409, 'No class advisor is set on your profile. Please set one first.');
+  const a = await requireAdvisor(s.advisorEmail);
 
   const submissionType = p.submissionType === 'TEAM' ? 'TEAM' : 'SOLO';
   const eventDate = clean(p.eventDate);
@@ -517,11 +583,18 @@ export async function POST(req) {
       // Carries a Clerk session token, not an app token.
       case 'CLERK_LOGIN':
         return json(await clerkLogin(req));
+      case 'PASSWORD_LOGIN':
+        return json(await passwordLogin(p));
       case 'REGISTER':
         return json(await register(p));
+      // Public on purpose: a student needs the advisor list before they have a
+      // session (to finish registering), and staff need it to pick who they
+      // are on the password screen. It exposes only the staff directory -
+      // name, class and college address.
       case 'ADVISORS':
-        verifyToken(req);
         return json(await listAdvisors());
+      case 'CHANGE_ADVISOR':
+        return json(await changeAdvisor(verifyToken(req), p));
       case 'SYNC':
         return json(await sync(verifyToken(req)));
       case 'UPDATE_CLASS':

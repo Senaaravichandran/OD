@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import '../models/od_request.dart';
 import '../models/user.dart';
 import 'api_client.dart';
+import 'notification_service.dart';
 
 class AuditEntry {
   final String id;
@@ -78,6 +79,10 @@ class ODService extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get lastError => _lastError;
 
+  /// True until the first sync for the current user completes. The first sync
+  /// only records which notifications exist; it does not pop them all up.
+  bool _firstSync = true;
+
   void setUser(AppUser? user) {
     _user = user;
     _requests.clear();
@@ -85,6 +90,7 @@ class ODService extends ChangeNotifier {
     _notifications.clear();
     _advisors = null;
     _lastError = null;
+    _firstSync = true;
     notifyListeners();
     if (user != null) refresh();
   }
@@ -131,6 +137,16 @@ class ODService extends ChangeNotifier {
         ..clear()
         ..addAll((data['notifications'] as List? ?? []).map((e) => AppNotification.fromJson(e as Map<String, dynamic>)));
       _lastError = null;
+
+      // Raise a device notification for anything that arrived since last time.
+      await NotificationService.showNew(
+        [
+          for (final n in _notifications)
+            (id: n.id, title: n.title, body: n.message),
+        ],
+        silent: _firstSync,
+      );
+      _firstSync = false;
     } on ApiException catch (e) {
       _lastError = e.message;
     } finally {
@@ -151,8 +167,20 @@ class ODService extends ChangeNotifier {
     return _advisors!;
   }
 
+  /// Corrects a wrongly chosen class advisor. Requests already filed stay with
+  /// the advisor who received them.
+  Future<AppUser> changeAdvisor(String advisorEmail) async {
+    final res = await _call('CHANGE_ADVISOR', {'advisorEmail': advisorEmail});
+    final updated = AppUser.fromJson(
+      res['user'] as Map<String, dynamic>,
+      _user!.token,
+    );
+    _user = updated;
+    notifyListeners();
+    return updated;
+  }
+
   Future<void> submitRequest({
-    required String advisorEmail,
     required String submissionType,
     required List<String> teamMembers,
     required String eventType,
@@ -162,8 +190,9 @@ class ODService extends ChangeNotifier {
     required String description,
   }) async {
     final dateStr = '${eventDate.year}-${eventDate.month.toString().padLeft(2, '0')}-${eventDate.day.toString().padLeft(2, '0')}';
+    // The advisor comes from the student's profile on the server, so it is not
+    // sent here.
     final res = await _call('CREATE_OD', {
-      'advisorEmail': advisorEmail,
       'submissionType': submissionType,
       'teamMembers': teamMembers,
       'eventType': eventType,

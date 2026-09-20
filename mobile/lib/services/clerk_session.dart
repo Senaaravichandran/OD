@@ -1,5 +1,6 @@
 import 'package:clerk_flutter/clerk_flutter.dart';
 
+import '../models/od_request.dart' show AdvisorInfo;
 import '../models/user.dart';
 import 'api_client.dart';
 
@@ -55,6 +56,42 @@ class ClerkSession {
     );
   }
 
+  /// Password sign-in, for staff and the HOD only.
+  static Future<ClerkExchange> passwordLogin({
+    required String role,
+    required String email,
+    required String password,
+  }) async {
+    final res = await ApiClient.call('PASSWORD_LOGIN', payload: {
+      'role': role,
+      'email': email,
+      'password': password,
+    });
+
+    if (res['needsRegistration'] == true) {
+      return ClerkExchange._(
+        needsRegistration: true,
+        email: res['email']?.toString(),
+        regToken: res['regToken']?.toString(),
+      );
+    }
+    return ClerkExchange._(
+      user: AppUser.fromJson(
+        res['user'] as Map<String, dynamic>,
+        res['token']?.toString() ?? '',
+      ),
+    );
+  }
+
+  /// The class advisors a student can be attached to. Reachable without a
+  /// session, because it is needed to finish registering.
+  static Future<List<AdvisorInfo>> advisors() async {
+    final res = await ApiClient.call('ADVISORS');
+    return (res['advisors'] as List? ?? [])
+        .map((e) => AdvisorInfo.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   /// Completes a first-time profile and returns the signed-in user.
   static Future<AppUser> register({
     required String regToken,
@@ -65,6 +102,7 @@ class ClerkSession {
     String? rollNumber,
     String? batch,
     String? staffCode,
+    String? advisorEmail,
   }) async {
     final res = await ApiClient.call('REGISTER', payload: {
       'regToken': regToken,
@@ -75,6 +113,7 @@ class ClerkSession {
       if (rollNumber != null) 'rollNumber': rollNumber,
       if (batch != null) 'batch': batch,
       if (staffCode != null) 'staffCode': staffCode,
+      if (advisorEmail != null) 'advisorEmail': advisorEmail,
     });
     return AppUser.fromJson(
       res['user'] as Map<String, dynamic>,
