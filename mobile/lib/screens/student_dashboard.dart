@@ -52,20 +52,21 @@ class _StudentDashboardState extends State<StudentDashboard> {
     );
   }
 
-  /// Lets a student fix a class advisor they picked wrongly at registration.
-  /// Requests already filed stay with the advisor who received them.
+  /// Lets a student fix the class they registered under. The advisor follows
+  /// from the class, so correcting the class corrects the advisor. Requests
+  /// already filed stay with the advisor who received them.
   Future<void> _openAdvisorSheet() async {
     final messenger = ScaffoldMessenger.of(context);
-    List<AdvisorInfo> advisors;
     try {
-      advisors = await _odService.fetchAdvisors(force: true);
+      await _odService.fetchAdvisors(force: true);
     } on ApiException catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent));
       return;
     }
     if (!mounted) return;
 
-    final chosen = await showModalBottomSheet<String>(
+    final classes = _odService.classes;
+    final picked = await showModalBottomSheet<({int year, String section})>(
       context: context,
       isScrollControlled: true,
       builder: (ctx) => SafeArea(
@@ -75,15 +76,15 @@ class _StudentDashboardState extends State<StudentDashboard> {
             const Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                'Choose your class advisor',
+                'Correct your class',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
               ),
             ),
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
               child: Text(
-                'New OD requests will go to this advisor. Requests you have already '
-                'sent stay with the advisor who received them.',
+                'Your class advisor follows from your class. New OD requests go to '
+                'that advisor; requests you have already sent stay where they are.',
                 style: TextStyle(fontSize: 12, color: Colors.black54),
               ),
             ),
@@ -92,20 +93,22 @@ class _StudentDashboardState extends State<StudentDashboard> {
               child: ListView(
                 shrinkWrap: true,
                 children: [
-                  if (advisors.isEmpty)
+                  if (classes.isEmpty)
                     const Padding(
                       padding: EdgeInsets.all(24),
-                      child: Text('No class advisors have registered yet.'),
+                      child: Text('Could not load the class list.'),
                     ),
-                  for (final a in advisors)
-                    ListTile(
-                      title: Text(a.name),
-                      subtitle: Text('${yearLabel(a.year)} · Section ${a.section}'),
-                      trailing: a.email == widget.user.advisorEmail
-                          ? const Icon(Icons.check_circle, color: Color(0xFF059669))
-                          : null,
-                      onTap: () => Navigator.pop(ctx, a.email),
-                    ),
+                  for (final y in classes)
+                    for (final s in y.sections)
+                      ListTile(
+                        title: Text('${yearLabel(y.year)} · Section ${s.section}'),
+                        subtitle: Text(s.advisorName),
+                        trailing: (y.year == widget.user.year &&
+                                s.section == widget.user.section)
+                            ? const Icon(Icons.check_circle, color: Color(0xFF059669))
+                            : null,
+                        onTap: () => Navigator.pop(ctx, (year: y.year, section: s.section)),
+                      ),
                 ],
               ),
             ),
@@ -114,12 +117,19 @@ class _StudentDashboardState extends State<StudentDashboard> {
       ),
     );
 
-    if (chosen == null || chosen == widget.user.advisorEmail) return;
+    if (picked == null) return;
+    if (picked.year == widget.user.year && picked.section == widget.user.section) return;
     try {
-      final updated = await _odService.changeAdvisor(chosen);
+      final updated = await _odService.changeClass(
+        year: picked.year,
+        section: picked.section,
+      );
       await widget.onUserUpdated(updated);
       messenger.showSnackBar(
-        const SnackBar(content: Text('Class advisor updated.'), backgroundColor: Color(0xFF059669)),
+        SnackBar(
+          content: Text('Class updated. Your advisor is now ${updated.advisorName ?? "-"}.'),
+          backgroundColor: const Color(0xFF059669),
+        ),
       );
     } on ApiException catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent));

@@ -18,6 +18,14 @@ import { NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { createClerkClient, verifyToken as verifyClerkToken } from '@clerk/backend';
 import crypto from 'crypto';
+import {
+  advisorForClass,
+  batchForYear,
+  classMap,
+  classesFor,
+  isRosterEmail,
+  rosterEntryForEmail,
+} from '@/lib/advisor-roster';
 
 export const dynamic = 'force-dynamic';
 
@@ -185,10 +193,50 @@ function hodEmail() {
 
 function normEmail(email) {
   const e = clean(email).toLowerCase();
-  if (!e.endsWith(DOMAIN) || e.length <= DOMAIN.length || /\s/.test(e)) {
+  if (/\s/.test(e) || !e.includes('@')) {
+    throw new HttpError(403, `Use your official ${DOMAIN} email address to sign in.`);
+  }
+  // Two advisors on the official roster are listed with personal addresses.
+  // Being on that roster is the department vouching for them, so they are let
+  // through; everyone else needs a college address.
+  if (isRosterEmail(e)) return e;
+  if (!e.endsWith(DOMAIN) || e.length <= DOMAIN.length) {
     throw new HttpError(403, `Use your official ${DOMAIN} email address to sign in.`);
   }
   return e;
+}
+
+/// Builds a staff profile straight from the roster, so an advisor the
+/// department already listed never has to fill in a registration form.
+function profileFromRoster(email) {
+  const entry = rosterEntryForEmail(email);
+  if (!entry) return null;
+  const classes = classesFor(email);
+  // An advisor holding more than one class is anchored to the first; the
+  // others are recorded so it is visible in the profile.
+  return {
+    email: entry.email.toLowerCase(),
+    role: 'STAFF',
+    name: entry.name,
+    year: entry.year,
+    section: entry.section,
+    batch: batchForYear(entry.year),
+    alsoAdvises: classes.length > 1
+      ? classes.slice(1).map((c) => ({ year: c.year, section: c.section }))
+      : undefined,
+    fromRoster: true,
+  };
+}
+
+/// Finds or creates the staff profile for a roster advisor.
+async function ensureRosterAdvisor(email) {
+  const existing = await getProfile(email);
+  if (existing) return existing;
+  const profile = profileFromRoster(email);
+  if (!profile) return null;
+  profile.registeredAt = new Date().toISOString();
+  await redis().hset(K_USERS, { [profile.email]: JSON.stringify(profile) });
+  return profile;
 }
 
 function requireRole(auth, ...roles) {
@@ -239,11 +287,19 @@ function publicUser(p) {
   };
 }
 
-// Looks up a registered class advisor by email, or fails with a clear message.
+// Resolves a class advisor by email. An advisor who is on the official roster
+// counts even if they have not signed in yet, so a student is never blocked
+// from raising an OD by their advisor not having opened the app.
 async function requireAdvisor(email) {
-  const a = parse(await redis().hget(K_USERS, clean(email).toLowerCase()));
-  if (!a || a.role !== 'STAFF') throw new HttpError(400, 'Please choose a registered class advisor.');
-  return a;
+  const key = clean(email).toLowerCase();
+  const stored = parse(await redis().hget(K_USERS, key));
+  if (stored && stored.role === 'STAFF') return stored;
+  if (stored && stored.role !== 'STAFF') {
+    throw new HttpError(400, 'That address is not a class advisor.');
+  }
+  const fromRoster = profileFromRoster(key);
+  if (fromRoster) return fromRoster;
+  throw new HttpError(400, 'Please choose a registered class advisor.');
 }
 
 function session(profile) {
@@ -293,6 +349,11 @@ async function clerkLogin(req) {
   const profile = await getProfile(email);
   if (profile) return session(profile);
 
+  // An advisor the department already listed goes straight in - the roster
+  // already says who they are and which class they hold.
+  const advisor = await ensureRosterAdvisor(email);
+  if (advisor) return session(advisor);
+
   return { success: true, needsRegistration: true, email, regToken: signRegToken(email) };
 }
 
@@ -324,25 +385,37 @@ async function passwordLogin(p) {
     if (profile && profile.role !== 'STAFF') {
       throw new HttpError(403, 'This email is registered as a student.');
     }
-    // An advisor signing in this way for the first time still has to fill in
-    // their class details, exactly as they would after signing in with Google.
-    if (!profile) {
-      return { success: true, needsRegistration: true, email, regToken: signRegToken(email) };
-    }
-    return session(profile);
+    if (profile) return session(profile);
+
+    // On the official roster: nothing left to ask for.
+    const advisor = await ensureRosterAdvisor(email);
+    if (advisor) return session(advisor);
+
+    // Someone not on the roster still has to say which class they hold.
+    return { success: true, needsRegistration: true, email, regToken: signRegToken(email) };
   }
 
   throw new HttpError(400, 'Password sign-in is only for staff and the HOD.');
 }
 
-// Lets a student correct a class advisor they picked wrongly. Requests already
+// Lets a student correct the class they registered under. The advisor follows
+// from the class, so this is how a wrong advisor gets fixed. Requests already
 // filed stay with the advisor who received them.
-async function changeAdvisor(auth, p) {
+async function changeClass(auth, p) {
   requireRole(auth, 'STUDENT');
   const profile = await getProfile(auth.email);
   if (!profile) throw new HttpError(404, 'Profile not found.');
-  const advisor = await requireAdvisor(p.advisorEmail);
-  profile.advisorEmail = advisor.email;
+
+  const year = yearOf(p.year);
+  const section = sectionOf(p.section);
+  const advisor = advisorForClass(year, section);
+  if (!advisor) {
+    throw new HttpError(400, `No class advisor is listed for Year ${year} Section ${section}.`);
+  }
+
+  profile.year = year;
+  profile.section = section;
+  profile.advisorEmail = advisor.email.toLowerCase();
   profile.advisorName = advisor.name;
   await redis().hset(K_USERS, { [auth.email]: JSON.stringify(profile) });
   return { success: true, user: publicUser(profile) };
@@ -376,17 +449,22 @@ async function register(p) {
     };
   } else if (role === 'STUDENT') {
     if (existing && existing.role !== 'STUDENT') throw new HttpError(403, 'This email is registered as staff.');
-    // The class advisor is chosen once here and then stays fixed, so every OD
-    // this student raises is routed to the same advisor.
-    const advisor = await requireAdvisor(p.advisorEmail);
+    // The advisor is not something the student picks. It follows from the
+    // class they are in, which is the one fact they do know.
+    const year = yearOf(p.year);
+    const section = sectionOf(p.section);
+    const advisor = advisorForClass(year, section);
+    if (!advisor) {
+      throw new HttpError(400, `No class advisor is listed for Year ${year} Section ${section}.`);
+    }
     profile = {
       email,
       role: 'STUDENT',
       name: text(p.name, 'Name', 80),
       rollNumber: text(p.rollNumber, 'Register number', 30).toUpperCase(),
-      year: yearOf(p.year),
-      section: sectionOf(p.section),
-      advisorEmail: advisor.email,
+      year,
+      section,
+      advisorEmail: advisor.email.toLowerCase(),
       advisorName: advisor.name,
     };
   } else {
@@ -410,14 +488,37 @@ async function updateClass(auth, p) {
   return { success: true, user: publicUser(profile) };
 }
 
+// The class structure, straight from the roster, plus any advisor who has
+// registered outside it. The apps use `classes` to offer only the sections
+// that actually exist in a given year and to show the advisor that follows.
 async function listAdvisors() {
-  const all = await redis().hvals(K_USERS);
-  const advisors = all
-    .map(parse)
-    .filter((u) => u && u.role === 'STAFF')
-    .map((u) => ({ email: u.email, name: u.name, year: u.year, section: u.section, batch: u.batch }))
-    .sort((a, b) => a.year - b.year || a.section.localeCompare(b.section) || a.name.localeCompare(b.name));
-  return { success: true, advisors };
+  const classes = classMap();
+  const rostered = new Set();
+  const advisors = [];
+
+  for (const { year, sections } of classes) {
+    for (const s of sections) {
+      rostered.add(s.advisorEmail.toLowerCase());
+      advisors.push({
+        email: s.advisorEmail.toLowerCase(),
+        name: s.advisorName,
+        year,
+        section: s.section,
+        batch: batchForYear(year),
+      });
+    }
+  }
+
+  // Staff who registered without being on the roster still belong in the list.
+  const stored = (await redis().hvals(K_USERS)).map(parse).filter(Boolean);
+  for (const u of stored) {
+    if (u.role === 'STAFF' && !rostered.has(String(u.email).toLowerCase())) {
+      advisors.push({ email: u.email, name: u.name, year: u.year, section: u.section, batch: u.batch });
+    }
+  }
+
+  advisors.sort((a, b) => a.year - b.year || String(a.section).localeCompare(String(b.section)));
+  return { success: true, advisors, classes };
 }
 
 async function sync(auth) {
@@ -593,8 +694,8 @@ export async function POST(req) {
       // name, class and college address.
       case 'ADVISORS':
         return json(await listAdvisors());
-      case 'CHANGE_ADVISOR':
-        return json(await changeAdvisor(verifyToken(req), p));
+      case 'CHANGE_CLASS':
+        return json(await changeClass(verifyToken(req), p));
       case 'SYNC':
         return json(await sync(verifyToken(req)));
       case 'UPDATE_CLASS':

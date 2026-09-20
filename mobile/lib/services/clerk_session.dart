@@ -1,6 +1,6 @@
 import 'package:clerk_flutter/clerk_flutter.dart';
 
-import '../models/od_request.dart' show AdvisorInfo;
+import '../models/od_request.dart' show AdvisorInfo, ClassYear;
 import '../models/user.dart';
 import 'api_client.dart';
 
@@ -89,6 +89,15 @@ class ClerkSession {
     final res = await ApiClient.call('ADVISORS');
     return (res['advisors'] as List? ?? [])
         .map((e) => AdvisorInfo.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// The department's class structure: which sections exist in each year and
+  /// which advisor holds each one. A student picks a class, not an advisor.
+  static Future<List<ClassYear>> classes() async {
+    final res = await ApiClient.call('ADVISORS');
+    return (res['classes'] as List? ?? [])
+        .map((e) => ClassYear.fromJson(e as Map<String, dynamic>))
         .toList();
   }
 

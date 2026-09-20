@@ -201,19 +201,33 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
   const [role, setRole] = useState('STUDENT');
   const [form, setForm] = useState({ name: '', rollNumber: '', year: '', section: '', batch: currentBatch() });
   const [staffCode, setStaffCode] = useState('');
-  const [advisorEmail, setAdvisorEmail] = useState('');
-  const [advisors, setAdvisors] = useState(null);
+  const [classes, setClasses] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const set = (k) => (ev) => setForm((f) => ({ ...f, [k]: ev.target.value }));
+  // Students never pick an advisor: the class they are in decides it.
+  const isStudent = role === 'STUDENT';
+  const yearOptions = isStudent && classes ? classes.map((c) => c.year) : YEARS;
+  const sectionOptions = (() => {
+    if (!isStudent || !classes) return SECTIONS;
+    const y = classes.find((c) => String(c.year) === String(form.year));
+    return y ? y.sections.map((s) => s.section) : [];
+  })();
+  const resolvedAdvisor = (() => {
+    if (!isStudent || !classes) return null;
+    const y = classes.find((c) => String(c.year) === String(form.year));
+    return y ? y.sections.find((s) => s.section === form.section) || null : null;
+  })();
+  const onYearChange = (ev) => setForm((f) => ({ ...f, year: ev.target.value, section: '' }));
+
 
   // Needed before the student has a session, so ADVISORS is public.
   useEffect(() => {
     let cancelled = false;
     api('ADVISORS')
-      .then((res) => !cancelled && setAdvisors(res.advisors || []))
-      .catch(() => !cancelled && setAdvisors([]));
+      .then((res) => !cancelled && setClasses(res.classes || []))
+      .catch(() => !cancelled && setClasses([]));
     return () => {
       cancelled = true;
     };
@@ -227,7 +241,6 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
       const payload = { role, regToken, name: form.name, year: form.year, section: form.section };
       if (role === 'STUDENT') {
         payload.rollNumber = form.rollNumber;
-        payload.advisorEmail = advisorEmail;
       } else {
         payload.batch = form.batch;
         payload.staffCode = staffCode;
@@ -279,50 +292,38 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
               <Field label="Register number">
                 <input className={styles.input} value={form.rollNumber} onChange={set('rollNumber')} required maxLength={30} />
               </Field>
-              <Field label="Class advisor">
-                {advisors === null ? (
-                  <p className={styles.muted}>Loading class advisors…</p>
-                ) : advisors.length === 0 ? (
-                  <p className={styles.muted}>
-                    No class advisors have registered yet. Your advisor needs to sign in once
-                    before you can be attached to them.
-                  </p>
-                ) : (
-                  <select
-                    className={styles.input}
-                    value={advisorEmail}
-                    onChange={(ev) => setAdvisorEmail(ev.target.value)}
-                    required
-                  >
-                    <option value="">Select your class advisor</option>
-                    {advisors.map((a) => (
-                      <option key={a.email} value={a.email}>
-                        {a.name} — Year {a.year} {a.section}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </Field>
             </>
           )}
 
           <Field label="Year" group>
-            <select className={styles.input} value={form.year} onChange={set('year')} required>
+            <select className={styles.input} value={form.year} onChange={onYearChange} required>
               <option value="">Select year</option>
-              {YEARS.map((y) => (
+              {yearOptions.map((y) => (
                 <option key={y} value={y}>{y}</option>
               ))}
             </select>
           </Field>
 
           <Field label="Section" group>
-            <select className={styles.input} value={form.section} onChange={set('section')} required>
-              <option value="">Select section</option>
-              {SECTIONS.map((s) => (
+            <select className={styles.input} value={form.section} onChange={set('section')} required disabled={!form.year}>
+              <option value="">{form.year ? 'Select section' : 'Choose year first'}</option>
+              {sectionOptions.map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
           </Field>
+
+          {role === 'STUDENT' && (
+            <Field label="Class advisor">
+              <p className={styles.muted}>
+                {classes === null
+                  ? 'Loading classes…'
+                  : resolvedAdvisor
+                    ? resolvedAdvisor.advisorName
+                    : 'Choose your year and section'}
+              </p>
+            </Field>
+          )}
 
           {role === 'STAFF' && (
             <>

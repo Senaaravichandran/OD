@@ -102,6 +102,41 @@ class ODRequest {
   }
 }
 
+/// One section of one year, and the advisor who holds it.
+class ClassSection {
+  final String section;
+  final String advisorName;
+  final String advisorEmail;
+
+  ClassSection({
+    required this.section,
+    required this.advisorName,
+    required this.advisorEmail,
+  });
+
+  factory ClassSection.fromJson(Map<String, dynamic> json) => ClassSection(
+        section: json['section']?.toString() ?? '',
+        advisorName: json['advisorName']?.toString() ?? '',
+        advisorEmail: json['advisorEmail']?.toString() ?? '',
+      );
+}
+
+/// The sections that exist in one year. Years do not all have the same
+/// sections, so the app offers only what the department actually runs.
+class ClassYear {
+  final int year;
+  final List<ClassSection> sections;
+
+  ClassYear({required this.year, required this.sections});
+
+  factory ClassYear.fromJson(Map<String, dynamic> json) => ClassYear(
+        year: (json['year'] as num?)?.toInt() ?? 0,
+        sections: (json['sections'] as List? ?? [])
+            .map((e) => ClassSection.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
 class AdvisorInfo {
   final String email;
   final String name;

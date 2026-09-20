@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../config/app_config.dart';
-import '../models/od_request.dart' show AdvisorInfo;
+import '../models/od_request.dart' show ClassSection, ClassYear;
 import '../models/user.dart';
 import '../services/api_client.dart';
 import '../services/clerk_session.dart';
@@ -10,9 +9,10 @@ import '../utils/validators.dart';
 /// Collects the details the identity provider does not hold, the first time
 /// someone signs in.
 ///
-/// For a student that includes their class advisor. The advisor is chosen once
-/// and then stays fixed, so every OD they raise goes to the same person; it can
-/// still be corrected later from the dashboard if they picked the wrong one.
+/// A student is never asked to pick an advisor. They pick their year, then the
+/// section - and only the sections that year actually has - and the advisor
+/// follows from the department's roster. That removes the whole class of
+/// mistakes where a student attaches themselves to the wrong advisor.
 class RegistrationScreen extends StatefulWidget {
   const RegistrationScreen({
     super.key,
@@ -43,13 +43,27 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   late String _role;
   int? _year;
   String? _section;
-  String? _advisorEmail;
-  List<AdvisorInfo> _advisors = [];
-  bool _loadingAdvisors = true;
+  List<ClassYear> _classes = [];
+  bool _loadingClasses = true;
+  String? _classesError;
   bool _busy = false;
   String? _error;
 
   bool get _isStudent => _role == 'STUDENT';
+
+  /// The sections that exist in the chosen year.
+  List<ClassSection> get _sectionsForYear {
+    if (_year == null) return const [];
+    final match = _classes.where((c) => c.year == _year);
+    return match.isEmpty ? const [] : match.first.sections;
+  }
+
+  /// The advisor implied by the chosen year and section.
+  ClassSection? get _resolvedClass {
+    if (_section == null) return null;
+    final match = _sectionsForYear.where((s) => s.section == _section);
+    return match.isEmpty ? null : match.first;
+  }
 
   @override
   void initState() {
@@ -57,20 +71,29 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     final y = DateTime.now().year;
     _batch.text = '${y - 1}-${y + 3}';
     _role = widget.initialRole == UserRole.student ? 'STUDENT' : 'STAFF';
-    _loadAdvisors();
+    _loadClasses();
   }
 
-  Future<void> _loadAdvisors() async {
+  Future<void> _loadClasses() async {
+    setState(() {
+      _loadingClasses = true;
+      _classesError = null;
+    });
     try {
-      final list = await ClerkSession.advisors();
+      final list = await ClerkSession.classes();
       if (mounted) {
         setState(() {
-          _advisors = list;
-          _loadingAdvisors = false;
+          _classes = list;
+          _loadingClasses = false;
         });
       }
-    } catch (_) {
-      if (mounted) setState(() => _loadingAdvisors = false);
+    } on ApiException catch (e) {
+      if (mounted) {
+        setState(() {
+          _classesError = e.message;
+          _loadingClasses = false;
+        });
+      }
     }
   }
 
@@ -85,10 +108,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_isStudent && _advisorEmail == null) {
-      setState(() => _error = 'Choose your class advisor.');
-      return;
-    }
     setState(() {
       _busy = true;
       _error = null;
@@ -103,7 +122,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
         rollNumber: _isStudent ? _rollNumber.text.trim() : null,
         batch: _isStudent ? null : _batch.text.trim(),
         staffCode: _isStudent ? null : _staffCode.text,
-        advisorEmail: _isStudent ? _advisorEmail : null,
       );
       await widget.onRegistered(user);
     } on ApiException catch (e) {
@@ -171,35 +189,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                   const SizedBox(height: 16),
                 ],
 
-                DropdownButtonFormField<int>(
-                  initialValue: _year,
-                  decoration: const InputDecoration(
-                    labelText: 'Year',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: AppConfig.years
-                      .map((y) => DropdownMenuItem(value: y, child: Text(yearLabel(y))))
-                      .toList(),
-                  onChanged: (v) => setState(() => _year = v),
-                  validator: (v) => v == null ? 'Choose your year.' : null,
-                ),
-                const SizedBox(height: 16),
-
-                DropdownButtonFormField<String>(
-                  initialValue: _section,
-                  decoration: const InputDecoration(
-                    labelText: 'Section',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: AppConfig.sections
-                      .map((s) => DropdownMenuItem(value: s, child: Text('Section $s')))
-                      .toList(),
-                  onChanged: (v) => setState(() => _section = v),
-                  validator: (v) => v == null ? 'Choose your section.' : null,
-                ),
-                const SizedBox(height: 16),
-
-                if (_isStudent) _advisorField(),
+                if (_isStudent) ..._classPickers() else ..._freeformClassPickers(),
 
                 if (!_isStudent) ...[
                   TextFormField(
@@ -259,77 +249,154 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     );
   }
 
-  Widget _advisorField() {
-    if (_loadingAdvisors) {
-      return const Padding(
-        padding: EdgeInsets.only(bottom: 16),
-        child: Row(
-          children: [
-            SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-            SizedBox(width: 12),
-            Text('Loading class advisors…'),
-          ],
+  /// Student: year and section come from the roster, and the advisor is shown
+  /// rather than chosen.
+  List<Widget> _classPickers() {
+    if (_loadingClasses) {
+      return const [
+        Padding(
+          padding: EdgeInsets.only(bottom: 16),
+          child: Row(
+            children: [
+              SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+              SizedBox(width: 12),
+              Text('Loading classes…'),
+            ],
+          ),
         ),
-      );
+      ];
     }
 
-    if (_advisors.isEmpty) {
-      return Container(
-        margin: const EdgeInsets.only(bottom: 16),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.amber.shade50,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.amber.shade300),
+    if (_classesError != null || _classes.isEmpty) {
+      return [
+        Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.red.shade50,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.red.shade200),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _classesError ?? 'Could not load the class list.',
+                style: TextStyle(color: Colors.red.shade900),
+              ),
+              TextButton(onPressed: _loadClasses, child: const Text('Try again')),
+            ],
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'No class advisors have registered yet.',
-              style: TextStyle(fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Your class advisor needs to sign in to the app once before you '
-              'can be attached to them. Please try again after they have.',
-              style: TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 8),
-            TextButton(
-              onPressed: () {
-                setState(() => _loadingAdvisors = true);
-                _loadAdvisors();
-              },
-              child: const Text('Check again'),
-            ),
-          ],
-        ),
-      );
+      ];
     }
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: DropdownButtonFormField<String>(
-        initialValue: _advisorEmail,
-        isExpanded: true,
+    return [
+      DropdownButtonFormField<int>(
+        initialValue: _year,
         decoration: const InputDecoration(
-          labelText: 'Class advisor',
-          helperText: 'Every OD you raise goes to this advisor',
+          labelText: 'Year',
           border: OutlineInputBorder(),
         ),
-        items: _advisors
-            .map((a) => DropdownMenuItem(
-                  value: a.email,
-                  child: Text(
-                    '${a.name} — ${yearLabel(a.year)} ${a.section}',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ))
+        items: _classes
+            .map((c) => DropdownMenuItem(value: c.year, child: Text(yearLabel(c.year))))
             .toList(),
-        onChanged: (v) => setState(() => _advisorEmail = v),
-        validator: (v) => v == null ? 'Choose your class advisor.' : null,
+        onChanged: (v) => setState(() {
+          _year = v;
+          _section = null; // sections differ per year
+        }),
+        validator: (v) => v == null ? 'Choose your year.' : null,
+      ),
+      const SizedBox(height: 16),
+      DropdownButtonFormField<String>(
+        initialValue: _section,
+        decoration: InputDecoration(
+          labelText: 'Section',
+          border: const OutlineInputBorder(),
+          helperText: _year == null ? 'Choose your year first' : null,
+        ),
+        items: _sectionsForYear
+            .map((s) => DropdownMenuItem(value: s.section, child: Text('Section ${s.section}')))
+            .toList(),
+        onChanged: _year == null ? null : (v) => setState(() => _section = v),
+        validator: (v) => v == null ? 'Choose your section.' : null,
+      ),
+      const SizedBox(height: 16),
+      _advisorPreview(),
+    ];
+  }
+
+  /// Shows the advisor the chosen class implies. Read-only by design.
+  Widget _advisorPreview() {
+    final resolved = _resolvedClass;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: resolved == null ? const Color(0xFFF1F5F9) : const Color(0xFFEFF6FF),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: resolved == null ? const Color(0xFFE2E8F0) : const Color(0xFFBFDBFE),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.assignment_ind_outlined,
+            size: 20,
+            color: resolved == null ? Colors.black38 : const Color(0xFF3350B0),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Your class advisor',
+                  style: TextStyle(fontSize: 11, color: Colors.black54),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  resolved?.advisorName ?? 'Choose your year and section',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: resolved == null ? Colors.black45 : const Color(0xFF1E293B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
+  }
+
+  /// Staff who are not on the roster still say which class they hold.
+  List<Widget> _freeformClassPickers() {
+    const years = [1, 2, 3, 4];
+    const sections = ['A', 'B', 'C', 'D', 'E', 'F'];
+    return [
+      DropdownButtonFormField<int>(
+        initialValue: _year,
+        decoration: const InputDecoration(labelText: 'Year', border: OutlineInputBorder()),
+        items: years
+            .map((y) => DropdownMenuItem(value: y, child: Text(yearLabel(y))))
+            .toList(),
+        onChanged: (v) => setState(() => _year = v),
+        validator: (v) => v == null ? 'Choose the year.' : null,
+      ),
+      const SizedBox(height: 16),
+      DropdownButtonFormField<String>(
+        initialValue: _section,
+        decoration: const InputDecoration(labelText: 'Section', border: OutlineInputBorder()),
+        items: sections
+            .map((s) => DropdownMenuItem(value: s, child: Text('Section $s')))
+            .toList(),
+        onChanged: (v) => setState(() => _section = v),
+        validator: (v) => v == null ? 'Choose the section.' : null,
+      ),
+      const SizedBox(height: 16),
+    ];
   }
 }

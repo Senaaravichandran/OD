@@ -67,6 +67,7 @@ class ODService extends ChangeNotifier {
   final List<AuditEntry> _auditLogs = [];
   final List<AppNotification> _notifications = [];
   List<AdvisorInfo>? _advisors;
+  List<ClassYear>? _classes;
   bool _isLoading = false;
   String? _lastError;
 
@@ -89,6 +90,7 @@ class ODService extends ChangeNotifier {
     _auditLogs.clear();
     _notifications.clear();
     _advisors = null;
+    _classes = null;
     _lastError = null;
     _firstSync = true;
     notifyListeners();
@@ -164,13 +166,20 @@ class ODService extends ChangeNotifier {
     _advisors = (res['advisors'] as List? ?? [])
         .map((e) => AdvisorInfo.fromJson(e as Map<String, dynamic>))
         .toList();
+    _classes = (res['classes'] as List? ?? [])
+        .map((e) => ClassYear.fromJson(e as Map<String, dynamic>))
+        .toList();
     return _advisors!;
   }
 
-  /// Corrects a wrongly chosen class advisor. Requests already filed stay with
-  /// the advisor who received them.
-  Future<AppUser> changeAdvisor(String advisorEmail) async {
-    final res = await _call('CHANGE_ADVISOR', {'advisorEmail': advisorEmail});
+  /// The department class structure, populated alongside [fetchAdvisors].
+  List<ClassYear> get classes => List.unmodifiable(_classes ?? const []);
+
+  /// Corrects the class a student registered under. The advisor follows from
+  /// the class, so this is how a wrong advisor gets fixed. Requests already
+  /// filed stay with the advisor who received them.
+  Future<AppUser> changeClass({required int year, required String section}) async {
+    final res = await _call('CHANGE_CLASS', {'year': year, 'section': section});
     final updated = AppUser.fromJson(
       res['user'] as Map<String, dynamic>,
       _user!.token,
