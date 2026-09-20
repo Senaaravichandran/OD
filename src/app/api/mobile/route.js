@@ -283,7 +283,7 @@ async function login(p) {
   if (role === 'HOD') {
     if (email !== hodEmail()) throw new HttpError(403, 'This email is not the HOD account.');
     checkPassword(p.password, 'HOD_PASSWORD');
-    return session({ email, role: 'HOD', name: clean(process.env.HOD_NAME) || 'HOD / IT' });
+    return session({ email, role: 'HOD', name: clean(process.env.HOD_NAME) || 'Dr. R. RAJU (HOD/IT)' });
   }
 
   if (email === hodEmail()) throw new HttpError(400, 'Use the HOD tab to sign in with this email.');
