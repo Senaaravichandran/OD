@@ -44,7 +44,7 @@ export default function Download() {
               <div className={styles.appInfo}>
                 <span className={styles.appInfoItem}>📦 Real Android APK (v1.0.0)</span>
                 <span className={styles.appInfoItem}>📱 Android 8.0+ Compatible</span>
-                <span className={styles.appInfoItem}>💾 Direct High-Speed Download (~39 MB)</span>
+                <span className={styles.appInfoItem}>💾 Direct High-Speed Download (~51 MB)</span>
               </div>
             </div>
           </div>
