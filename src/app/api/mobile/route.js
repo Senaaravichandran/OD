@@ -1,17 +1,22 @@
-// Lightweight API for the SMVEC OD Flutter app.
+// Lightweight API for the SMVEC OD web portal and Flutter app.
 //
-// Free-tier friendly by design:
-//  - Runs as a single Vercel (Hobby) serverless function.
-//  - Only storage is Upstash Redis (free tier). Every request uses 1-3 Redis
-//    commands, batched into one HTTP round trip where possible.
-//  - Auth is stateless (HMAC-signed tokens), so checking a session costs zero
-//    Redis commands.
-//  - Lists (notifications, audit log) are trimmed so storage never grows unbounded.
-//  - Student login OTPs are emailed via Resend or Brevo HTTP APIs (both have free tiers).
-//    OTPs are stored hashed, expire in 10 minutes, and are rate limited.
+// Authentication is handled entirely by Clerk. Both clients sign the user in
+// with Clerk, then POST their Clerk session token once to CLERK_LOGIN. This
+// route verifies that token, reads the verified email address from Clerk, and
+// issues a short app session token (HMAC signed) that every later request
+// carries. That exchange keeps the per-request cost at zero external calls,
+// which matters on the free tier.
+//
+// There is no email sending here at all. Clerk owns email verification, so the
+// app never needs an SMTP/API mail provider of its own.
+//
+// Storage is Upstash Redis only. Every request uses 1-3 Redis commands,
+// batched into one HTTP round trip where possible. Lists are trimmed so
+// storage never grows unbounded.
 
 import { NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
+import { createClerkClient, verifyToken as verifyClerkToken } from '@clerk/backend';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -28,12 +33,6 @@ const MAX_NOTIFS = 30;
 const MAX_HOD_REQUESTS = 300;
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const REG_TOKEN_TTL_MS = 15 * 60 * 1000;
-
-const kOtp = (email) => `smvec_m_otp_v1:${email}`;
-const kOtpDaily = () => `smvec_m_otp_count_v1:${new Date().toISOString().slice(0, 10)}`;
-const OTP_TTL_S = 600; // code valid for 10 minutes
-const OTP_RESEND_S = 60; // minimum gap between two codes for the same email
-const OTP_MAX_ATTEMPTS = 5;
 
 const SECTIONS = ['A', 'B', 'C', 'D', 'E', 'F'];
 
@@ -57,6 +56,15 @@ function redis() {
   if (!url || !token) throw new HttpError(503, 'Server storage is not configured.');
   redisClient = new Redis({ url, token, automaticDeserialization: false });
   return redisClient;
+}
+
+let clerk;
+function clerkApi() {
+  if (clerk) return clerk;
+  const secretKey = clean(process.env.CLERK_SECRET_KEY);
+  if (!secretKey) throw new HttpError(503, 'Sign-in is not configured on the server.');
+  clerk = createClerkClient({ secretKey });
+  return clerk;
 }
 
 class HttpError extends Error {
@@ -86,7 +94,7 @@ function secret() {
   // Fallback so the app works without extra config; set AUTH_SECRET in production.
   return crypto
     .createHash('sha256')
-    .update(`${clean(process.env.UPSTASH_REDIS_REST_TOKEN)}|${clean(process.env.STAFF_PASSWORD)}|${clean(process.env.HOD_PASSWORD)}`)
+    .update(`${clean(process.env.UPSTASH_REDIS_REST_TOKEN)}|${clean(process.env.STAFF_PASSWORD)}`)
     .digest('hex');
 }
 
@@ -110,16 +118,51 @@ function signToken(user) {
   return sign({ e: user.email, r: user.role, x: Date.now() + TOKEN_TTL_MS });
 }
 
-// Proves a student verified their email OTP; only valid for completing registration.
+// Proves Clerk verified this email; only valid for completing registration.
 function signRegToken(email) {
   return sign({ e: email, p: 'reg', x: Date.now() + REG_TOKEN_TTL_MS });
 }
 
-function verifyToken(req) {
+function bearer(req) {
   const header = req.headers.get('authorization') || '';
-  const data = readSigned(header.startsWith('Bearer ') ? header.slice(7) : '');
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+}
+
+function verifyToken(req) {
+  const data = readSigned(bearer(req));
   if (!data || !data.e || !data.r) throw new HttpError(401, 'Session expired. Please log in again.');
   return { email: data.e, role: data.r };
+}
+
+// Verifies the Clerk session token and returns the user's verified email.
+// This is the only place the app trusts an external identity.
+async function emailFromClerk(req) {
+  const token = bearer(req);
+  if (!token) throw new HttpError(401, 'Please sign in first.');
+
+  let claims;
+  try {
+    claims = await verifyClerkToken(token, { secretKey: clean(process.env.CLERK_SECRET_KEY) });
+  } catch {
+    throw new HttpError(401, 'Your sign-in could not be verified. Please sign in again.');
+  }
+  if (!claims?.sub) throw new HttpError(401, 'Your sign-in could not be verified. Please sign in again.');
+
+  let user;
+  try {
+    user = await clerkApi().users.getUser(claims.sub);
+  } catch {
+    throw new HttpError(502, 'Could not reach the sign-in service. Please try again.');
+  }
+
+  // Only a verified primary address is trusted - an unverified one could be
+  // any address the user typed in.
+  const primary = (user.emailAddresses || []).find((e) => e.id === user.primaryEmailAddressId);
+  if (!primary) throw new HttpError(403, 'Your account has no email address.');
+  if (primary.verification?.status !== 'verified') {
+    throw new HttpError(403, 'Please verify your email address before signing in.');
+  }
+  return normEmail(primary.emailAddress);
 }
 
 function safeEqual(a, b) {
@@ -132,7 +175,7 @@ function checkPassword(given, envName) {
   const expected = clean(process.env[envName]);
   if (!expected) throw new HttpError(503, 'Server password is not configured.');
   if (!given || !safeEqual(String(given).trim(), expected)) {
-    throw new HttpError(401, 'Incorrect password.');
+    throw new HttpError(401, 'Incorrect staff code.');
   }
 }
 
@@ -143,7 +186,7 @@ function hodEmail() {
 function normEmail(email) {
   const e = clean(email).toLowerCase();
   if (!e.endsWith(DOMAIN) || e.length <= DOMAIN.length || /\s/.test(e)) {
-    throw new HttpError(400, `Use your official ${DOMAIN} email address.`);
+    throw new HttpError(403, `Use your official ${DOMAIN} email address to sign in.`);
   }
   return e;
 }
@@ -220,174 +263,45 @@ async function saveRequest(request, audit, notifs = []) {
   await p.exec();
 }
 
-// Sends an email through whichever free provider is configured. Returns true when accepted.
-//  - Resend: RESEND_API_KEY + RESEND_FROM (sender must be on a domain verified in Resend).
-//  - Brevo:  BREVO_API_KEY + BREVO_FROM (a single verified sender email is enough, 300/day free).
-function mailConfigured() {
-  return Boolean(
-    (clean(process.env.RESEND_API_KEY) && clean(process.env.RESEND_FROM)) ||
-    (clean(process.env.BREVO_API_KEY) && clean(process.env.BREVO_FROM))
-  );
-}
-
-async function sendMail(to, subject, html) {
-  if (!to) return false;
-  try {
-    const resendKey = clean(process.env.RESEND_API_KEY);
-    const resendFrom = clean(process.env.RESEND_FROM);
-    if (resendKey && resendFrom) {
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: resendFrom, to: [to], subject, html }),
-      });
-      if (res.ok) return true;
-      console.warn('Resend rejected email:', res.status, await res.text().catch(() => ''));
-    }
-    const brevoKey = clean(process.env.BREVO_API_KEY);
-    const brevoFrom = clean(process.env.BREVO_FROM);
-    if (brevoKey && brevoFrom) {
-      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: { 'api-key': brevoKey, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({
-          sender: { email: brevoFrom, name: 'SMVEC OD Portal' },
-          to: [{ email: to }],
-          subject,
-          htmlContent: html,
-        }),
-      });
-      if (res.ok) return true;
-      console.warn('Brevo rejected email:', res.status, await res.text().catch(() => ''));
-    }
-  } catch (err) {
-    console.warn('Email send failed:', err.message);
-  }
-  return false;
-}
-
-function otpHash(email, otp) {
-  return crypto.createHmac('sha256', secret()).update(`${email}|${otp}`).digest('hex');
-}
-
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
-async function login(p) {
-  const role = clean(p.role).toUpperCase();
-  const email = normEmail(p.email);
+// The single entry point after a Clerk sign-in. Trades a Clerk session token
+// for an app session token, and reports whether the profile still needs to be
+// filled in.
+async function clerkLogin(req) {
+  const email = await emailFromClerk(req);
 
-  if (role === 'HOD') {
-    if (email !== hodEmail()) throw new HttpError(403, 'This email is not the HOD account.');
-    checkPassword(p.password, 'HOD_PASSWORD');
+  if (email === hodEmail()) {
+    // Clerk already proved the caller controls the HOD mailbox, so there is
+    // nothing further to check.
     return session({ email, role: 'HOD', name: clean(process.env.HOD_NAME) || 'Dr. R. RAJU (HOD/IT)' });
   }
 
-  if (email === hodEmail()) throw new HttpError(400, 'Use the HOD tab to sign in with this email.');
+  const profile = await getProfile(email);
+  if (profile) return session(profile);
 
-  if (role === 'STAFF') {
-    checkPassword(p.password, 'STAFF_PASSWORD');
-    const profile = await getProfile(email);
-    if (profile && profile.role !== 'STAFF') throw new HttpError(403, 'This email is registered as a student.');
-    if (!profile) return { success: true, needsRegistration: true };
-    return session(profile);
-  }
-
-  if (role === 'STUDENT') {
-    return sendStudentOtp(email);
-  }
-
-  throw new HttpError(400, 'Unknown role.');
+  return { success: true, needsRegistration: true, email, regToken: signRegToken(email) };
 }
 
-async function sendStudentOtp(email) {
-  if (!mailConfigured()) throw new HttpError(503, 'Email service is not configured. Please contact the department.');
-
-  const lookup = redis().pipeline();
-  lookup.hget(K_USERS, email);
-  lookup.get(kOtp(email));
-  const [rawProfile, rawOtp] = await lookup.exec();
-  const profile = parse(rawProfile);
-  if (profile && profile.role !== 'STUDENT') throw new HttpError(403, 'This email is registered as staff. Use the Staff tab.');
-
-  const previous = parse(rawOtp);
-  if (previous && Date.now() - previous.t < OTP_RESEND_S * 1000) {
-    const wait = Math.ceil((OTP_RESEND_S * 1000 - (Date.now() - previous.t)) / 1000);
-    throw new HttpError(429, `Please wait ${wait}s before requesting another code.`);
-  }
-
-  // Global daily cap keeps us inside the email provider's free quota.
-  const dailyLimit = Number(clean(process.env.OTP_DAILY_LIMIT)) || 280;
-  const counter = redis().pipeline();
-  counter.incr(kOtpDaily());
-  counter.expire(kOtpDaily(), 26 * 60 * 60);
-  const [sentToday] = await counter.exec();
-  if (Number(sentToday) > dailyLimit) throw new HttpError(429, 'Daily email limit reached. Please try again tomorrow.');
-
-  const otp = String(crypto.randomInt(100000, 1000000));
-  await redis().set(kOtp(email), JSON.stringify({ h: otpHash(email, otp), a: 0, t: Date.now() }), { ex: OTP_TTL_S });
-
-  const sent = await sendMail(
-    email,
-    `SMVEC OD Portal login code: ${otp}`,
-    `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
-       <div style="background:#3350B0;color:#fff;padding:16px;text-align:center"><b>SMVEC OD PORTAL</b><br/><small>Department of Information Technology</small></div>
-       <div style="padding:20px;color:#1e293b">
-         <p>Your one-time login code is:</p>
-         <p style="font-size:32px;font-weight:800;letter-spacing:8px;color:#3350B0;text-align:center;margin:16px 0">${otp}</p>
-         <p style="font-size:13px;color:#64748b">It is valid for 10 minutes. Do not share this code with anyone. If you did not try to sign in, ignore this email.</p>
-       </div>
-     </div>`
-  );
-  if (!sent) {
-    await redis().del(kOtp(email));
-    throw new HttpError(502, 'Could not send the code to your email. Please try again.');
-  }
-  return { success: true, otpSent: true, resendAfter: OTP_RESEND_S, expiresIn: OTP_TTL_S };
-}
-
-async function verifyStudentOtp(p) {
-  const email = normEmail(p.email);
-  const otp = clean(p.otp);
-  if (!/^\d{6}$/.test(otp)) throw new HttpError(400, 'Enter the 6-digit code.');
-
-  const record = parse(await redis().get(kOtp(email)));
-  if (!record) throw new HttpError(400, 'Code expired. Please request a new one.');
-  if (record.a >= OTP_MAX_ATTEMPTS) {
-    await redis().del(kOtp(email));
-    throw new HttpError(429, 'Too many wrong attempts. Please request a new code.');
-  }
-  if (!safeEqual(record.h, otpHash(email, otp))) {
-    record.a += 1;
-    await redis().set(kOtp(email), JSON.stringify(record), { keepTtl: true });
-    const left = OTP_MAX_ATTEMPTS - record.a;
-    throw new HttpError(400, left > 0 ? `Incorrect code. ${left} attempt${left === 1 ? '' : 's'} left.` : 'Too many wrong attempts. Please request a new code.');
-  }
-
-  // Correct code: it is single-use.
-  const done = redis().pipeline();
-  done.del(kOtp(email));
-  done.hget(K_USERS, email);
-  const [, rawProfile] = await done.exec();
-  const profile = parse(rawProfile);
-  if (profile && profile.role !== 'STUDENT') throw new HttpError(403, 'This email is registered as staff. Use the Staff tab.');
-  if (!profile) return { success: true, needsRegistration: true, regToken: signRegToken(email) };
-  return session(profile);
-}
-
+// Completes a first-time profile. The email is not taken from the request
+// body - it comes from the registration token, which only CLERK_LOGIN issues.
 async function register(p) {
-  const role = clean(p.role).toUpperCase();
-  const email = normEmail(p.email);
-  if (email === hodEmail()) throw new HttpError(400, 'The HOD account cannot be registered here.');
+  const proof = readSigned(p.regToken);
+  if (!proof || proof.p !== 'reg' || !proof.e) {
+    throw new HttpError(401, 'Your sign-in expired. Please sign in again.');
+  }
+  const email = proof.e;
+  if (email === hodEmail()) throw new HttpError(400, 'The HOD account does not need registration.');
 
+  const role = clean(p.role).toUpperCase();
   const existing = await getProfile(email);
   let profile;
 
   if (role === 'STAFF') {
-    checkPassword(p.password, 'STAFF_PASSWORD');
+    // Clerk proves who they are; the staff code proves they are an advisor.
+    checkPassword(p.staffCode ?? p.password, 'STAFF_PASSWORD');
     if (existing && existing.role !== 'STAFF') throw new HttpError(403, 'This email is registered as a student.');
     profile = {
       email,
@@ -398,10 +312,6 @@ async function register(p) {
       batch: batchOf(p.batch),
     };
   } else if (role === 'STUDENT') {
-    const proof = readSigned(p.regToken);
-    if (!proof || proof.p !== 'reg' || proof.e !== email) {
-      throw new HttpError(401, 'Email verification expired. Please sign in again to get a new code.');
-    }
     if (existing && existing.role !== 'STUDENT') throw new HttpError(403, 'This email is registered as staff.');
     profile = {
       email,
@@ -566,16 +476,6 @@ async function hodDecide(auth, p) {
       { to: request.advisorEmail, title: approve ? 'OD sanctioned' : 'OD rejected by HOD', text: `${request.studentName} - ${request.eventName}` },
     ]
   );
-
-  if (approve) {
-    await sendMail(
-      request.studentEmail,
-      `On-Duty approved: ${request.eventName}`,
-      `<p>Dear ${esc(request.studentName)} (${esc(request.rollNumber)}),</p>
-       <p>Your On-Duty request <b>${esc(request.id)}</b> for <b>${esc(request.eventName)}</b> on ${esc(request.eventDate)} has been approved by your Class Advisor (${esc(request.advisorName)}) and the HOD.</p>
-       <p>HOD remarks: ${esc(remarks)}</p><p>- SMVEC IT Department OD Portal</p>`
-    );
-  }
   return { success: true, request };
 }
 
@@ -614,10 +514,9 @@ export async function POST(req) {
     const p = body.payload || {};
 
     switch (action) {
-      case 'LOGIN':
-        return json(await login(p));
-      case 'VERIFY_OTP':
-        return json(await verifyStudentOtp(p));
+      // Carries a Clerk session token, not an app token.
+      case 'CLERK_LOGIN':
+        return json(await clerkLogin(req));
       case 'REGISTER':
         return json(await register(p));
       case 'ADVISORS':

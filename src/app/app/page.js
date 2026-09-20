@@ -2,13 +2,19 @@
 
 // Web portal for the SMVEC OD system. It talks to the same /api/mobile backend
 // as the Flutter app, so logins and OD data are shared between web and mobile.
+//
+// Clerk is the only way in. Clerk verifies the college email address (its own
+// emails, so the app sends none), and the portal then trades the Clerk session
+// token for an app session token through CLERK_LOGIN. The app token is held in
+// React state only - Clerk already persists the real session, so there is
+// nothing to keep in localStorage.
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { SignIn, useAuth } from '@clerk/nextjs';
 import styles from './app.module.css';
 
 const API = '/api/mobile';
-const SESSION_KEY = 'smvec_od_session_v1';
 const DOMAIN = '@smvec.ac.in';
 const YEARS = [1, 2, 3, 4];
 const SECTIONS = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -46,50 +52,6 @@ async function api(action, payload = {}, token) {
   return data;
 }
 
-// The session lives in localStorage and is read through useSyncExternalStore,
-// so sign-in / sign-out also stays in sync across open tabs.
-const sessionListeners = new Set();
-
-function subscribeSession(cb) {
-  sessionListeners.add(cb);
-  window.addEventListener('storage', cb);
-  return () => {
-    sessionListeners.delete(cb);
-    window.removeEventListener('storage', cb);
-  };
-}
-
-function readSessionRaw() {
-  try {
-    return localStorage.getItem(SESSION_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function parseSession(raw) {
-  try {
-    const s = JSON.parse(raw || 'null');
-    return s && s.token && s.user ? s : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveSession(s) {
-  try {
-    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-    else localStorage.removeItem(SESSION_KEY);
-  } catch {}
-  sessionListeners.forEach((cb) => cb());
-}
-
-function roleFromUrl() {
-  const r = new URLSearchParams(window.location.search).get('role')?.toUpperCase();
-  if (r === 'STAFF' || r === 'ADVISOR') return 'STAFF';
-  return r === 'HOD' ? 'HOD' : 'STUDENT';
-}
-
 function currentBatch() {
   const y = new Date().getFullYear();
   return `${y - 1}-${y + 3}`;
@@ -103,293 +65,254 @@ const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { day: '2-
 // ---------------------------------------------------------------------------
 
 export default function PortalPage() {
-  // undefined during server render / before hydration, then the stored string.
-  const raw = useSyncExternalStore(subscribeSession, readSessionRaw, () => undefined);
-  const session = useMemo(() => parseSession(raw), [raw]);
+  const { isLoaded, isSignedIn, getToken, signOut } = useAuth();
 
-  const onLogin = useCallback((s) => saveSession(s), []);
-  const onLogout = useCallback(() => saveSession(null), []);
-  const onUserUpdate = (user) => saveSession({ ...session, user });
+  // null = not exchanged yet. Once set, either `session` or `pending` is filled.
+  const [session, setSession] = useState(null);
+  const [pending, setPending] = useState(null); // { email, regToken } for a new profile
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(true);
 
-  if (raw === undefined) return <div className={styles.appContainer} />;
-  if (!session) return <LoginView onLogin={onLogin} />;
-  return <Dashboard session={session} onLogout={onLogout} onUserUpdate={onUserUpdate} />;
+  const signOutEverywhere = useCallback(() => {
+    setSession(null);
+    setPending(null);
+    signOut();
+  }, [signOut]);
+
+  // Trade the Clerk session for an app session as soon as Clerk is ready.
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (!isSignedIn) {
+      setSession(null);
+      setPending(null);
+      setBusy(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setBusy(true);
+      try {
+        const clerkToken = await getToken();
+        const res = await api('CLERK_LOGIN', {}, clerkToken);
+        if (cancelled) return;
+        if (res.needsRegistration) {
+          setPending({ email: res.email, regToken: res.regToken });
+          setSession(null);
+        } else {
+          setSession({ token: res.token, user: res.user });
+          setPending(null);
+        }
+        setError('');
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, isSignedIn, getToken]);
+
+  const onUserUpdate = (user) => setSession((s) => (s ? { ...s, user } : s));
+
+  if (!isLoaded || busy) {
+    return (
+      <div className={styles.appContainer}>
+        <div className={styles.authContainer}>
+          <div className={styles.authCard}>
+            <p className={styles.muted}>Signing you in…</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isSignedIn) return <SignInView />;
+
+  // Signed in with Clerk but the server refused (wrong domain, unverified, …).
+  if (error && !session && !pending) {
+    return (
+      <div className={styles.appContainer}>
+        <div className={styles.authContainer}>
+          <div className={styles.authCard}>
+            <ErrorBox text={error} />
+            <button type="button" className={styles.dangerBtn} onClick={signOutEverywhere}>
+              Sign out and try another account
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (pending) {
+    return (
+      <RegisterView
+        email={pending.email}
+        regToken={pending.regToken}
+        onDone={(s) => {
+          setSession(s);
+          setPending(null);
+        }}
+        onCancel={signOutEverywhere}
+      />
+    );
+  }
+
+  if (!session) return <SignInView />;
+  return <Dashboard session={session} onLogout={signOutEverywhere} onUserUpdate={onUserUpdate} />;
 }
 
 // ---------------------------------------------------------------------------
-// Login + registration
+// Sign in (handled entirely by Clerk)
 // ---------------------------------------------------------------------------
 
-function LoginView({ onLogin }) {
-  // Only rendered on the client (see PortalPage), so reading the URL here is safe.
-  const [role, setRole] = useState(roleFromUrl);
-  // step: form | otp | register
-  const [step, setStep] = useState('form');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [otp, setOtp] = useState('');
-  const [regToken, setRegToken] = useState('');
-  const [reg, setReg] = useState({ name: '', rollNumber: '', year: '', section: '', batch: currentBatch() });
-  const [error, setError] = useState('');
-  const [info, setInfo] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [resendIn, setResendIn] = useState(0);
-
-  useEffect(() => {
-    if (resendIn <= 0) return;
-    const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
-    return () => clearTimeout(t);
-  }, [resendIn]);
-
-  const switchRole = (r) => {
-    setRole(r);
-    setStep('form');
-    setPassword('');
-    setOtp('');
-    setError('');
-    setInfo('');
-  };
-
-  const normEmail = () => {
-    const e = email.trim().toLowerCase();
-    if (!e.endsWith(DOMAIN) || e.length <= DOMAIN.length) throw new Error(`Use your official ${DOMAIN} email address.`);
-    return e;
-  };
-
-  const run = async (fn) => {
-    setError('');
-    setBusy(true);
-    try {
-      await fn();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const submitLogin = (ev) => {
-    ev.preventDefault();
-    run(async () => {
-      const e = normEmail();
-      const payload = { role, email: e };
-      if (role !== 'STUDENT') payload.password = password;
-      const res = await api('LOGIN', payload);
-      if (res.otpSent) {
-        setStep('otp');
-        setOtp('');
-        setResendIn(res.resendAfter || 60);
-        setInfo(`We sent a 6-digit code to ${e}.`);
-      } else if (res.needsRegistration) {
-        setStep('register');
-        setInfo('First time here? Set up your class details to continue.');
-      } else {
-        onLogin({ token: res.token, user: res.user });
-      }
-    });
-  };
-
-  const resendOtp = () =>
-    run(async () => {
-      const res = await api('LOGIN', { role: 'STUDENT', email: normEmail() });
-      setResendIn(res.resendAfter || 60);
-      setInfo('A new code has been sent to your email.');
-    });
-
-  const submitOtp = (ev) => {
-    ev.preventDefault();
-    run(async () => {
-      const res = await api('VERIFY_OTP', { email: normEmail(), otp: otp.trim() });
-      if (res.needsRegistration) {
-        setRegToken(res.regToken);
-        setStep('register');
-        setInfo('Email verified. Complete your student profile to continue.');
-      } else {
-        onLogin({ token: res.token, user: res.user });
-      }
-    });
-  };
-
-  const submitRegister = (ev) => {
-    ev.preventDefault();
-    run(async () => {
-      const payload = { role, email: normEmail(), name: reg.name, year: Number(reg.year), section: reg.section };
-      if (role === 'STUDENT') Object.assign(payload, { rollNumber: reg.rollNumber, regToken });
-      else Object.assign(payload, { batch: reg.batch, password });
-      const res = await api('REGISTER', payload);
-      onLogin({ token: res.token, user: res.user });
-    });
-  };
-
-  const title = { STUDENT: 'Student login', STAFF: 'Staff login', HOD: 'HOD login' }[role];
-  const subtitle = {
-    STUDENT: 'Sign in with your college email. We will email you a one-time code.',
-    STAFF: 'Sign in with your official email ID and the staff password.',
-    HOD: 'Sign in with the HOD email ID and password.',
-  }[role];
-
+function SignInView() {
   return (
     <div className={styles.appContainer}>
-      <TopBar>
-        <a href="/downloads/smvec-od.apk" download className={styles.ghostBtn}>Download app</a>
-        <Link href="/" className={styles.ghostBtn}>Home</Link>
-      </TopBar>
-
-      <main className={styles.authContainer}>
-        <div className={styles.authHead}>
-          <img src="/college_logo.png" alt="SMVEC logo" className={styles.authLogo} />
-          <h1 className={styles.authTitle}>SMVEC OD PORTAL</h1>
-          <p className={styles.authSubtitle}>IT Department · Sri Manakula Vinayagar Engineering College</p>
-        </div>
-
-        <div className={styles.roleSelector} role="tablist">
-          {[
-            ['STUDENT', 'Student'],
-            ['STAFF', 'Staff'],
-            ['HOD', 'HOD'],
-          ].map(([r, label]) => (
-            <button
-              key={r}
-              type="button"
-              role="tab"
-              aria-selected={role === r}
-              className={`${styles.roleTab} ${role === r ? styles.roleTabActive : ''}`}
-              onClick={() => switchRole(r)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
+      <div className={styles.authContainer}>
         <div className={styles.authCard}>
-          <h2 className={styles.cardTitle}>
-            {step === 'register' ? (role === 'STUDENT' ? 'Student profile' : 'Class details') : step === 'otp' ? 'Enter code' : title}
-          </h2>
-          <p className={styles.cardSub}>{step === 'form' ? subtitle : info}</p>
-
-          {step === 'form' && (
-            <form onSubmit={submitLogin} className={styles.form}>
-              <Field label={`College email ID (${DOMAIN})`}>
-                <input
-                  type="email"
-                  className={styles.input}
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder={role === 'HOD' ? 'hodit@smvec.ac.in' : `name${DOMAIN}`}
-                  autoComplete="email"
-                  required
-                />
-              </Field>
-              {role !== 'STUDENT' && (
-                <Field label={role === 'HOD' ? 'HOD password' : 'Staff password'} group>
-                  <div className={styles.inputWrap}>
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      className={styles.input}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      autoComplete="current-password"
-                      required
-                    />
-                    <button type="button" className={styles.inputAddon} onClick={() => setShowPassword((v) => !v)}>
-                      {showPassword ? 'Hide' : 'Show'}
-                    </button>
-                  </div>
-                </Field>
-              )}
-              <ErrorBox text={error} />
-              <button type="submit" className={styles.primaryBtn} disabled={busy}>
-                {busy ? 'Please wait…' : role === 'STUDENT' ? 'Send login code' : 'Sign in'}
-              </button>
-            </form>
-          )}
-
-          {step === 'otp' && (
-            <form onSubmit={submitOtp} className={styles.form}>
-              <Field label="6-digit code">
-                <input
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  className={`${styles.input} ${styles.otpInput}`}
-                  value={otp}
-                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
-                  autoFocus
-                  required
-                />
-              </Field>
-              <ErrorBox text={error} />
-              <button type="submit" className={styles.primaryBtn} disabled={busy || otp.length !== 6}>
-                {busy ? 'Verifying…' : 'Verify and continue'}
-              </button>
-              <div className={styles.rowBetween}>
-                <button type="button" className={styles.linkBtn} onClick={() => switchRole('STUDENT')}>
-                  Change email
-                </button>
-                <button type="button" className={styles.linkBtn} onClick={resendOtp} disabled={busy || resendIn > 0}>
-                  {resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {step === 'register' && (
-            <form onSubmit={submitRegister} className={styles.form}>
-              <Field label="Full name">
-                <input className={styles.input} value={reg.name} onChange={(e) => setReg({ ...reg, name: e.target.value })} required />
-              </Field>
-              {role === 'STUDENT' && (
-                <Field label="Register number">
-                  <input
-                    className={styles.input}
-                    value={reg.rollNumber}
-                    onChange={(e) => setReg({ ...reg, rollNumber: e.target.value.toUpperCase() })}
-                    required
-                  />
-                </Field>
-              )}
-              <div className={styles.grid2}>
-                <Field label={role === 'STUDENT' ? 'Year' : 'Class year'}>
-                  <select className={styles.input} value={reg.year} onChange={(e) => setReg({ ...reg, year: e.target.value })} required>
-                    <option value="">Select</option>
-                    {YEARS.map((y) => (
-                      <option key={y} value={y}>Year {y}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Section">
-                  <select className={styles.input} value={reg.section} onChange={(e) => setReg({ ...reg, section: e.target.value })} required>
-                    <option value="">Select</option>
-                    {SECTIONS.map((s) => (
-                      <option key={s} value={s}>Sec {s}</option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
-              {role === 'STAFF' && (
-                <Field label="Batch (e.g. 2023-2027)">
-                  <input className={styles.input} value={reg.batch} onChange={(e) => setReg({ ...reg, batch: e.target.value })} required />
-                </Field>
-              )}
-              <ErrorBox text={error} />
-              <button type="submit" className={styles.primaryBtn} disabled={busy}>
-                {busy ? 'Saving…' : 'Continue'}
-              </button>
-              <button type="button" className={styles.linkBtn} onClick={() => switchRole(role)}>
-                Back
-              </button>
-            </form>
-          )}
+          <div className={styles.authHead}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/college_logo.png" alt="SMVEC" className={styles.authLogo} />
+            <h1 className={styles.authTitle}>SMVEC OD Portal</h1>
+            <p className={styles.authSubtitle}>
+              Department of Information Technology. Sign in with your official {DOMAIN} account.
+            </p>
+          </div>
+          <SignIn routing="hash" />
+          <p className={styles.muted}>
+            <Link href="/">Back to the main site</Link>
+          </p>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Dashboard shell
+// First-time profile
 // ---------------------------------------------------------------------------
+
+function RegisterView({ email, regToken, onDone, onCancel }) {
+  const [role, setRole] = useState('STUDENT');
+  const [form, setForm] = useState({ name: '', rollNumber: '', year: '', section: '', batch: currentBatch() });
+  const [staffCode, setStaffCode] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const set = (k) => (ev) => setForm((f) => ({ ...f, [k]: ev.target.value }));
+
+  const submit = async (ev) => {
+    ev.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const payload = { role, regToken, name: form.name, year: form.year, section: form.section };
+      if (role === 'STUDENT') payload.rollNumber = form.rollNumber;
+      else {
+        payload.batch = form.batch;
+        payload.staffCode = staffCode;
+      }
+      const res = await api('REGISTER', payload);
+      onDone({ token: res.token, user: res.user });
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={styles.appContainer}>
+      <div className={styles.authContainer}>
+        <div className={styles.authCard}>
+          <div className={styles.authHead}>
+            <h1 className={styles.authTitle}>Complete your profile</h1>
+            <p className={styles.authSubtitle}>
+              Signed in as <b>{email}</b>. We just need a few details the first time.
+            </p>
+          </div>
+
+          <form className={styles.form} onSubmit={submit}>
+          <Field label="I am a">
+            <div className={styles.roleSelector}>
+              {[
+                ['STUDENT', 'Student'],
+                ['STAFF', 'Class Advisor'],
+              ].map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  className={role === v ? styles.roleTabActive : styles.roleTab}
+                  onClick={() => setRole(v)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Full name">
+            <input className={styles.input} value={form.name} onChange={set('name')} required maxLength={80} />
+          </Field>
+
+          {role === 'STUDENT' && (
+            <Field label="Register number">
+              <input className={styles.input} value={form.rollNumber} onChange={set('rollNumber')} required maxLength={30} />
+            </Field>
+          )}
+
+          <Field label="Year" group>
+            <select className={styles.input} value={form.year} onChange={set('year')} required>
+              <option value="">Select year</option>
+              {YEARS.map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Section" group>
+            <select className={styles.input} value={form.section} onChange={set('section')} required>
+              <option value="">Select section</option>
+              {SECTIONS.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </Field>
+
+          {role === 'STAFF' && (
+            <>
+              <Field label="Batch">
+                <input className={styles.input} value={form.batch} onChange={set('batch')} required placeholder="2023-2027" />
+              </Field>
+              <Field label="Staff code">
+                <input
+                  className={styles.input}
+                  type="password"
+                  value={staffCode}
+                  onChange={(ev) => setStaffCode(ev.target.value)}
+                  required
+                  placeholder="Provided by the department"
+                />
+              </Field>
+            </>
+          )}
+
+          {error && <ErrorBox text={error} />}
+
+          <button type="submit" className={styles.primaryBtn} disabled={busy}>
+            {busy ? 'Saving…' : 'Continue'}
+          </button>
+          <button type="button" className={styles.linkBtn} onClick={onCancel}>
+            Sign out
+          </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function Dashboard({ session, onLogout, onUserUpdate }) {
   const { token, user } = session;
