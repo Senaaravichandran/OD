@@ -3,16 +3,21 @@ import 'package:clerk_flutter/clerk_flutter.dart';
 import 'package:flutter/material.dart';
 
 import '../config/app_config.dart';
+import '../models/od_request.dart' show AdvisorInfo;
 import '../models/user.dart';
 import '../services/api_client.dart';
 import '../services/clerk_session.dart';
+import '../utils/validators.dart';
 
 /// Sign-in options for one role.
 ///
 /// Students get Google only: an OD is filed against a real, verified college
-/// address, so there is no password door for them. Staff and the HOD also get
-/// a password, because they need to sign in on shared devices and during
-/// testing.
+/// address, so there is no password door for them. Advisors and the HOD also
+/// get a password, because they need to sign in on shared devices.
+///
+/// An advisor does not type an address - they pick themselves from the
+/// department roster, which is also the only list of addresses the server will
+/// accept as an advisor.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({
     super.key,
@@ -32,14 +37,18 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  final _email = TextEditingController();
   final _password = TextEditingController();
 
   bool _showPasswordForm = false;
   bool _busy = false;
   String? _error;
 
+  List<AdvisorInfo> _advisors = [];
+  AdvisorInfo? _selectedAdvisor;
+  bool _loadingAdvisors = false;
+
   bool get _isStudent => widget.role == UserRole.student;
+  bool get _isAdvisor => widget.role == UserRole.advisor;
 
   String get _roleLabel => switch (widget.role) {
         UserRole.student => 'Student',
@@ -48,16 +57,29 @@ class _AuthScreenState extends State<AuthScreen> {
       };
 
   @override
-  void initState() {
-    super.initState();
-    if (widget.role == UserRole.hod) _email.text = AppConfig.hodEmail;
-  }
-
-  @override
   void dispose() {
-    _email.dispose();
     _password.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadAdvisors() async {
+    setState(() => _loadingAdvisors = true);
+    try {
+      final list = await ClerkSession.advisors();
+      if (mounted) {
+        setState(() {
+          _advisors = list;
+          _loadingAdvisors = false;
+        });
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.message;
+          _loadingAdvisors = false;
+        });
+      }
+    }
   }
 
   Future<void> _google() async {
@@ -78,14 +100,19 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _passwordSignIn() async {
+    final email = _isAdvisor ? _selectedAdvisor?.email : AppConfig.hodEmail;
+    if (email == null) {
+      setState(() => _error = 'Choose which class advisor you are.');
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
       final result = await ClerkSession.passwordLogin(
-        role: widget.role == UserRole.hod ? 'HOD' : 'STAFF',
-        email: _email.text.trim(),
+        role: _isAdvisor ? 'STAFF' : 'HOD',
+        email: email,
         password: _password.text,
       );
       if (!mounted) return;
@@ -99,6 +126,11 @@ class _AuthScreenState extends State<AuthScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _openPasswordForm() {
+    setState(() => _showPasswordForm = true);
+    if (_isAdvisor && _advisors.isEmpty) _loadAdvisors();
   }
 
   @override
@@ -122,7 +154,9 @@ class _AuthScreenState extends State<AuthScreen> {
               Image.asset('assets/college_logo.png', height: 72),
               const SizedBox(height: 24),
               Text(
-                'Use your official ${AppConfig.allowedDomain} account.',
+                _isAdvisor
+                    ? 'Only the department’s listed class advisors can sign in here.'
+                    : 'Use your official ${AppConfig.allowedDomain} account.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Colors.black54),
               ),
@@ -155,22 +189,11 @@ class _AuthScreenState extends State<AuthScreen> {
                 const SizedBox(height: 12),
                 if (!_showPasswordForm)
                   TextButton(
-                    onPressed: _busy ? null : () => setState(() => _showPasswordForm = true),
+                    onPressed: _busy ? null : _openPasswordForm,
                     child: const Text('Sign in with a password instead'),
                   )
                 else ...[
-                  TextField(
-                    controller: _email,
-                    readOnly: widget.role == UserRole.hod,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: InputDecoration(
-                      labelText: widget.role == UserRole.hod
-                          ? 'HOD email'
-                          : 'Your college email',
-                      hintText: 'name${AppConfig.allowedDomain}',
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
+                  if (_isAdvisor) _advisorPicker() else _hodIdentity(),
                   const SizedBox(height: 12),
                   TextField(
                     controller: _password,
@@ -213,6 +236,57 @@ class _AuthScreenState extends State<AuthScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// The advisor chooses their class rather than typing an address, so the
+  /// address is always one the server will accept.
+  Widget _advisorPicker() {
+    if (_loadingAdvisors) {
+      return const Row(
+        children: [
+          SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+          SizedBox(width: 12),
+          Text('Loading class advisors…'),
+        ],
+      );
+    }
+    if (_advisors.isEmpty) {
+      return Row(
+        children: [
+          const Expanded(child: Text('Could not load the advisor list.')),
+          TextButton(onPressed: _loadAdvisors, child: const Text('Retry')),
+        ],
+      );
+    }
+    return DropdownButtonFormField<AdvisorInfo>(
+      initialValue: _selectedAdvisor,
+      isExpanded: true,
+      decoration: const InputDecoration(
+        labelText: 'You are',
+        border: OutlineInputBorder(),
+      ),
+      items: _advisors
+          .map((a) => DropdownMenuItem(
+                value: a,
+                child: Text(
+                  '${a.name} — ${yearLabel(a.year)} ${a.section}',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ))
+          .toList(),
+      onChanged: (v) => setState(() => _selectedAdvisor = v),
+    );
+  }
+
+  Widget _hodIdentity() {
+    return TextField(
+      controller: TextEditingController(text: AppConfig.hodEmail),
+      readOnly: true,
+      decoration: const InputDecoration(
+        labelText: 'HOD email',
+        border: OutlineInputBorder(),
       ),
     );
   }

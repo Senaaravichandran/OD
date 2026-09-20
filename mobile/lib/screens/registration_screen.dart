@@ -37,9 +37,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
   final _rollNumber = TextEditingController();
-  final _batch = TextEditingController();
-  final _staffCode = TextEditingController();
-
   late String _role;
   int? _year;
   String? _section;
@@ -48,8 +45,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   String? _classesError;
   bool _busy = false;
   String? _error;
-
-  bool get _isStudent => _role == 'STUDENT';
 
   /// The sections that exist in the chosen year.
   List<ClassSection> get _sectionsForYear {
@@ -68,8 +63,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   @override
   void initState() {
     super.initState();
-    final y = DateTime.now().year;
-    _batch.text = '${y - 1}-${y + 3}';
     _role = widget.initialRole == UserRole.student ? 'STUDENT' : 'STAFF';
     _loadClasses();
   }
@@ -101,8 +94,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   void dispose() {
     _name.dispose();
     _rollNumber.dispose();
-    _batch.dispose();
-    _staffCode.dispose();
     super.dispose();
   }
 
@@ -119,9 +110,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
         name: _name.text.trim(),
         year: _year,
         section: _section,
-        rollNumber: _isStudent ? _rollNumber.text.trim() : null,
-        batch: _isStudent ? null : _batch.text.trim(),
-        staffCode: _isStudent ? null : _staffCode.text,
+        rollNumber: _rollNumber.text.trim(),
       );
       await widget.onRegistered(user);
     } on ApiException catch (e) {
@@ -174,8 +163,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                if (_isStudent) ...[
-                  TextFormField(
+                TextFormField(
                     controller: _rollNumber,
                     textCapitalization: TextCapitalization.characters,
                     decoration: const InputDecoration(
@@ -185,36 +173,10 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                     validator: (v) => (v == null || v.trim().isEmpty)
                         ? 'Enter your register number.'
                         : null,
-                  ),
-                  const SizedBox(height: 16),
-                ],
+                ),
+                const SizedBox(height: 16),
 
-                if (_isStudent) ..._classPickers() else ..._freeformClassPickers(),
-
-                if (!_isStudent) ...[
-                  TextFormField(
-                    controller: _batch,
-                    decoration: const InputDecoration(
-                      labelText: 'Batch',
-                      hintText: '2023-2027',
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) => validateBatch(v ?? ''),
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _staffCode,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Staff code',
-                      helperText: 'Provided by the department',
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) =>
-                        (v == null || v.isEmpty) ? 'Enter the staff code.' : null,
-                  ),
-                  const SizedBox(height: 16),
-                ],
+                ..._classPickers(),
 
                 if (_error != null) ...[
                   Container(
@@ -372,31 +334,4 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     );
   }
 
-  /// Staff who are not on the roster still say which class they hold.
-  List<Widget> _freeformClassPickers() {
-    const years = [1, 2, 3, 4];
-    const sections = ['A', 'B', 'C', 'D', 'E', 'F'];
-    return [
-      DropdownButtonFormField<int>(
-        initialValue: _year,
-        decoration: const InputDecoration(labelText: 'Year', border: OutlineInputBorder()),
-        items: years
-            .map((y) => DropdownMenuItem(value: y, child: Text(yearLabel(y))))
-            .toList(),
-        onChanged: (v) => setState(() => _year = v),
-        validator: (v) => v == null ? 'Choose the year.' : null,
-      ),
-      const SizedBox(height: 16),
-      DropdownButtonFormField<String>(
-        initialValue: _section,
-        decoration: const InputDecoration(labelText: 'Section', border: OutlineInputBorder()),
-        items: sections
-            .map((s) => DropdownMenuItem(value: s, child: Text('Section $s')))
-            .toList(),
-        onChanged: (v) => setState(() => _section = v),
-        validator: (v) => v == null ? 'Choose the section.' : null,
-      ),
-      const SizedBox(height: 16),
-    ];
-  }
 }

@@ -378,21 +378,24 @@ async function passwordLogin(p) {
 
   if (role === 'STAFF') {
     checkPassword(p.password, 'STAFF_PASSWORD');
-    // The shared code proves "a member of staff"; the email says which one.
     const email = normEmail(p.email);
     if (email === hodEmail()) throw new HttpError(400, 'Use the HOD option for this address.');
+
+    // Only the addresses on the official roster may hold a class. The staff
+    // code alone is not enough - it is shared, so on its own it would let any
+    // college address claim to be an advisor and start approving ODs.
+    if (!isRosterEmail(email)) {
+      throw new HttpError(403, 'This email is not listed as a class advisor for the department.');
+    }
+
     const profile = await getProfile(email);
     if (profile && profile.role !== 'STAFF') {
       throw new HttpError(403, 'This email is registered as a student.');
     }
     if (profile) return session(profile);
 
-    // On the official roster: nothing left to ask for.
     const advisor = await ensureRosterAdvisor(email);
-    if (advisor) return session(advisor);
-
-    // Someone not on the roster still has to say which class they hold.
-    return { success: true, needsRegistration: true, email, regToken: signRegToken(email) };
+    return session(advisor);
   }
 
   throw new HttpError(400, 'Password sign-in is only for staff and the HOD.');
@@ -436,17 +439,18 @@ async function register(p) {
   let profile;
 
   if (role === 'STAFF') {
-    // Clerk proves who they are; the staff code proves they are an advisor.
+    // Advisors on the roster never reach this form - they are provisioned from
+    // the roster at sign-in. Anyone else asking to become one is refused, so a
+    // leaked staff code cannot create an advisor who can approve ODs.
+    if (!isRosterEmail(email)) {
+      throw new HttpError(403, 'This email is not listed as a class advisor for the department.');
+    }
     checkPassword(p.staffCode ?? p.password, 'STAFF_PASSWORD');
     if (existing && existing.role !== 'STAFF') throw new HttpError(403, 'This email is registered as a student.');
-    profile = {
-      email,
-      role: 'STAFF',
-      name: text(p.name, 'Name', 80),
-      year: yearOf(p.year),
-      section: sectionOf(p.section),
-      batch: batchOf(p.batch),
-    };
+    profile = profileFromRoster(email);
+    profile.registeredAt = existing?.registeredAt || new Date().toISOString();
+    await redis().hset(K_USERS, { [email]: JSON.stringify(profile) });
+    return session(profile);
   } else if (role === 'STUDENT') {
     if (existing && existing.role !== 'STUDENT') throw new HttpError(403, 'This email is registered as staff.');
     // The advisor is not something the student picks. It follows from the
