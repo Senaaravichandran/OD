@@ -1,7 +1,11 @@
-mobile
-.gradle
-android
-ios
-build
-.dart_tool
-.git
+# Flutter app sources - not part of the Next.js deployment.
+# NOTE: these patterns MUST be anchored with a leading slash. An unanchored
+# "mobile" matches any directory of that name at any depth, which silently
+# excluded src/app/api/mobile/ and shipped a build with no backend route.
+/mobile
+/.gradle
+/android
+/ios
+/build
+/.dart_tool
+/.git
