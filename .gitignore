@@ -51,3 +51,7 @@ mobile/android/build/
 
 # Supabase CLI scratch state (machine-local, references the linked project)
 supabase/.temp/
+
+# Firebase Admin service account - full project access, never commit
+firebase-admin*.json
+*-firebase-adminsdk-*.json
