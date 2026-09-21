@@ -3,31 +3,32 @@ import 'package:flutter/material.dart';
 import '../models/od_request.dart' show ClassSection, ClassYear;
 import '../models/user.dart';
 import '../services/api_client.dart';
-import '../services/clerk_session.dart';
-import '../utils/validators.dart';
+import '../services/od_service.dart';
+import '../theme.dart';
+import '../widgets/common.dart';
 
-/// Collects the details the identity provider does not hold, the first time
-/// someone signs in.
+/// The first-run profile, for students only.
+///
+/// Staff never reach this screen: they are on the department roster already,
+/// and nobody who is not on it can become an advisor.
 ///
 /// A student is never asked to pick an advisor. They pick their year, then the
-/// section - and only the sections that year actually has - and the advisor
-/// follows from the department's roster. That removes the whole class of
-/// mistakes where a student attaches themselves to the wrong advisor.
+/// section - and only the sections that year actually runs - and the advisor
+/// follows from the roster. That removes the whole class of mistakes where a
+/// student attaches themselves to the wrong advisor.
 class RegistrationScreen extends StatefulWidget {
   const RegistrationScreen({
     super.key,
     required this.email,
-    required this.regToken,
-    required this.initialRole,
-    required this.onRegistered,
+    required this.suggestedName,
+    required this.onDone,
     required this.onCancel,
   });
 
   final String email;
-  final String regToken;
-  final UserRole initialRole;
-  final Future<void> Function(AppUser user) onRegistered;
-  final Future<void> Function() onCancel;
+  final String suggestedName;
+  final Future<void> Function(AppUser user) onDone;
+  final VoidCallback onCancel;
 
   @override
   State<RegistrationScreen> createState() => _RegistrationScreenState();
@@ -36,25 +37,24 @@ class RegistrationScreen extends StatefulWidget {
 class _RegistrationScreenState extends State<RegistrationScreen> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
-  final _rollNumber = TextEditingController();
-  late String _role;
+  final _registerNumber = TextEditingController();
+  final _od = ODService();
+
+  List<ClassYear> _classes = [];
   int? _year;
   String? _section;
-  List<ClassYear> _classes = [];
-  bool _loadingClasses = true;
-  String? _classesError;
+  bool _loading = true;
+  String? _loadError;
   bool _busy = false;
   String? _error;
 
-  /// The sections that exist in the chosen year.
   List<ClassSection> get _sectionsForYear {
     if (_year == null) return const [];
     final match = _classes.where((c) => c.year == _year);
     return match.isEmpty ? const [] : match.first.sections;
   }
 
-  /// The advisor implied by the chosen year and section.
-  ClassSection? get _resolvedClass {
+  ClassSection? get _resolved {
     if (_section == null) return null;
     final match = _sectionsForYear.where((s) => s.section == _section);
     return match.isEmpty ? null : match.first;
@@ -63,38 +63,38 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   @override
   void initState() {
     super.initState();
-    _role = widget.initialRole == UserRole.student ? 'STUDENT' : 'STAFF';
+    _name.text = widget.suggestedName;
     _loadClasses();
-  }
-
-  Future<void> _loadClasses() async {
-    setState(() {
-      _loadingClasses = true;
-      _classesError = null;
-    });
-    try {
-      final list = await ClerkSession.classes();
-      if (mounted) {
-        setState(() {
-          _classes = list;
-          _loadingClasses = false;
-        });
-      }
-    } on ApiException catch (e) {
-      if (mounted) {
-        setState(() {
-          _classesError = e.message;
-          _loadingClasses = false;
-        });
-      }
-    }
   }
 
   @override
   void dispose() {
     _name.dispose();
-    _rollNumber.dispose();
+    _registerNumber.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadClasses() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final classes = await _od.loadClasses(force: true);
+      if (mounted) {
+        setState(() {
+          _classes = classes;
+          _loading = false;
+        });
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        setState(() {
+          _loadError = e.message;
+          _loading = false;
+        });
+      }
+    }
   }
 
   Future<void> _submit() async {
@@ -104,15 +104,13 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       _error = null;
     });
     try {
-      final user = await ClerkSession.register(
-        regToken: widget.regToken,
-        role: _role,
+      final user = await _od.completeProfile(
         name: _name.text.trim(),
-        year: _year,
-        section: _section,
-        rollNumber: _rollNumber.text.trim(),
+        registerNumber: _registerNumber.text.trim().toUpperCase(),
+        year: _year!,
+        section: _section!,
       );
-      await widget.onRegistered(user);
+      await widget.onDone(user);
     } on ApiException catch (e) {
       if (mounted) {
         setState(() {
@@ -125,83 +123,152 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
   @override
   Widget build(BuildContext context) {
-    const primaryBlue = Color(0xFF3350B0);
-
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Complete your profile'),
+        actions: [
+          TextButton(
+            onPressed: _busy ? null : widget.onCancel,
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
           child: Form(
             key: _formKey,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: 12),
-                Image.asset('assets/college_logo.png', height: 72),
-                const SizedBox(height: 20),
-                const Text(
-                  'Complete your profile',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppTheme.tint(AppTheme.primary),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppTheme.primary.withValues(alpha: 0.2)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.verified_user_rounded,
+                          size: 20, color: AppTheme.primary),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Signed in as',
+                              style: TextStyle(fontSize: 11.5, color: AppTheme.muted),
+                            ),
+                            Text(
+                              widget.email,
+                              style: const TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.ink,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Signed in as ${widget.email}',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.black54),
-                ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 22),
 
                 TextFormField(
                   controller: _name,
+                  textCapitalization: TextCapitalization.words,
                   decoration: const InputDecoration(
                     labelText: 'Full name',
-                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person_outline_rounded, size: 20),
                   ),
                   validator: (v) =>
                       (v == null || v.trim().isEmpty) ? 'Enter your name.' : null,
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
 
                 TextFormField(
-                    controller: _rollNumber,
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: const InputDecoration(
-                      labelText: 'Register number',
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) => (v == null || v.trim().isEmpty)
-                        ? 'Enter your register number.'
-                        : null,
-                ),
-                const SizedBox(height: 16),
-
-                ..._classPickers(),
-
-                if (_error != null) ...[
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.red.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.red.shade200),
-                    ),
-                    child: Text(_error!, style: TextStyle(color: Colors.red.shade900)),
+                  controller: _registerNumber,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: 'Register number',
+                    prefixIcon: Icon(Icons.badge_outlined, size: 20),
                   ),
-                  const SizedBox(height: 16),
+                  validator: (v) => (v == null || v.trim().isEmpty)
+                      ? 'Enter your register number.'
+                      : null,
+                ),
+                const SizedBox(height: 14),
+
+                if (_loading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 18),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2)),
+                        SizedBox(width: 12),
+                        Text('Loading classes…',
+                            style: TextStyle(color: AppTheme.muted)),
+                      ],
+                    ),
+                  )
+                else if (_loadError != null)
+                  ErrorBanner(message: _loadError!, onRetry: _loadClasses)
+                else ...[
+                  DropdownButtonFormField<int>(
+                    initialValue: _year,
+                    decoration: const InputDecoration(
+                      labelText: 'Year',
+                      prefixIcon: Icon(Icons.school_outlined, size: 20),
+                    ),
+                    items: _classes
+                        .map((c) => DropdownMenuItem(
+                              value: c.year,
+                              child: Text('Year ${c.year}'),
+                            ))
+                        .toList(),
+                    onChanged: (v) => setState(() {
+                      _year = v;
+                      _section = null; // sections differ per year
+                    }),
+                    validator: (v) => v == null ? 'Choose your year.' : null,
+                  ),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<String>(
+                    initialValue: _section,
+                    decoration: InputDecoration(
+                      labelText: 'Section',
+                      prefixIcon: const Icon(Icons.group_outlined, size: 20),
+                      helperText: _year == null ? 'Choose your year first' : null,
+                    ),
+                    items: _sectionsForYear
+                        .map((s) => DropdownMenuItem(
+                              value: s.section,
+                              child: Text('Section ${s.section}'),
+                            ))
+                        .toList(),
+                    onChanged:
+                        _year == null ? null : (v) => setState(() => _section = v),
+                    validator: (v) => v == null ? 'Choose your section.' : null,
+                  ),
+                  const SizedBox(height: 14),
+                  _AdvisorPreview(resolved: _resolved),
                 ],
 
+                if (_error != null) ...[
+                  const SizedBox(height: 4),
+                  ErrorBanner(message: _error!),
+                ],
+                const SizedBox(height: 10),
+
                 FilledButton(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: primaryBlue,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  onPressed: _busy ? null : _submit,
+                  onPressed: _busy || _loading ? null : _submit,
                   child: Text(_busy ? 'Saving…' : 'Continue'),
-                ),
-                TextButton(
-                  onPressed: _busy ? null : () => widget.onCancel(),
-                  child: const Text('Sign out'),
                 ),
               ],
             ),
@@ -210,95 +277,24 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       ),
     );
   }
+}
 
-  /// Student: year and section come from the roster, and the advisor is shown
-  /// rather than chosen.
-  List<Widget> _classPickers() {
-    if (_loadingClasses) {
-      return const [
-        Padding(
-          padding: EdgeInsets.only(bottom: 16),
-          child: Row(
-            children: [
-              SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-              SizedBox(width: 12),
-              Text('Loading classes…'),
-            ],
-          ),
-        ),
-      ];
-    }
+/// Shows the advisor the chosen class implies. Read-only by design.
+class _AdvisorPreview extends StatelessWidget {
+  const _AdvisorPreview({required this.resolved});
 
-    if (_classesError != null || _classes.isEmpty) {
-      return [
-        Container(
-          margin: const EdgeInsets.only(bottom: 16),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.red.shade50,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.red.shade200),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _classesError ?? 'Could not load the class list.',
-                style: TextStyle(color: Colors.red.shade900),
-              ),
-              TextButton(onPressed: _loadClasses, child: const Text('Try again')),
-            ],
-          ),
-        ),
-      ];
-    }
+  final ClassSection? resolved;
 
-    return [
-      DropdownButtonFormField<int>(
-        initialValue: _year,
-        decoration: const InputDecoration(
-          labelText: 'Year',
-          border: OutlineInputBorder(),
-        ),
-        items: _classes
-            .map((c) => DropdownMenuItem(value: c.year, child: Text(yearLabel(c.year))))
-            .toList(),
-        onChanged: (v) => setState(() {
-          _year = v;
-          _section = null; // sections differ per year
-        }),
-        validator: (v) => v == null ? 'Choose your year.' : null,
-      ),
-      const SizedBox(height: 16),
-      DropdownButtonFormField<String>(
-        initialValue: _section,
-        decoration: InputDecoration(
-          labelText: 'Section',
-          border: const OutlineInputBorder(),
-          helperText: _year == null ? 'Choose your year first' : null,
-        ),
-        items: _sectionsForYear
-            .map((s) => DropdownMenuItem(value: s.section, child: Text('Section ${s.section}')))
-            .toList(),
-        onChanged: _year == null ? null : (v) => setState(() => _section = v),
-        validator: (v) => v == null ? 'Choose your section.' : null,
-      ),
-      const SizedBox(height: 16),
-      _advisorPreview(),
-    ];
-  }
-
-  /// Shows the advisor the chosen class implies. Read-only by design.
-  Widget _advisorPreview() {
-    final resolved = _resolvedClass;
+  @override
+  Widget build(BuildContext context) {
+    final known = resolved != null;
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: resolved == null ? const Color(0xFFF1F5F9) : const Color(0xFFEFF6FF),
-        borderRadius: BorderRadius.circular(10),
+        color: known ? AppTheme.tint(AppTheme.primary) : AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: resolved == null ? const Color(0xFFE2E8F0) : const Color(0xFFBFDBFE),
+          color: known ? AppTheme.primary.withValues(alpha: 0.22) : AppTheme.border,
         ),
       ),
       child: Row(
@@ -306,7 +302,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
           Icon(
             Icons.assignment_ind_outlined,
             size: 20,
-            color: resolved == null ? Colors.black38 : const Color(0xFF3350B0),
+            color: known ? AppTheme.primary : AppTheme.muted,
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -315,7 +311,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
               children: [
                 const Text(
                   'Your class advisor',
-                  style: TextStyle(fontSize: 11, color: Colors.black54),
+                  style: TextStyle(fontSize: 11.5, color: AppTheme.muted),
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -323,9 +319,16 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                   style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w700,
-                    color: resolved == null ? Colors.black45 : const Color(0xFF1E293B),
+                    color: known ? AppTheme.ink : AppTheme.muted,
                   ),
                 ),
+                if (known) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Every OD you raise goes to them',
+                    style: TextStyle(fontSize: 11.5, color: AppTheme.muted),
+                  ),
+                ],
               ],
             ),
           ),
@@ -333,5 +336,4 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       ),
     );
   }
-
 }

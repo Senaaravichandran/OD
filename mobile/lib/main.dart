@@ -1,225 +1,187 @@
-import 'package:app_links/app_links.dart';
-import 'package:clerk_auth/clerk_auth.dart' as clerk;
-import 'package:clerk_flutter/clerk_flutter.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import 'config/app_config.dart';
 import 'models/user.dart';
-import 'screens/advisor_dashboard.dart';
+import 'screens/advisor/advisor_shell.dart';
 import 'screens/auth_screen.dart';
-import 'screens/hod_dashboard.dart';
-import 'screens/login_screen.dart';
-import 'screens/notifications_sheet.dart';
+import 'screens/hod/hod_shell.dart';
 import 'screens/registration_screen.dart';
 import 'screens/role_picker_screen.dart';
-import 'screens/student_dashboard.dart';
+import 'screens/student/student_shell.dart';
+import 'services/api_client.dart';
+import 'services/auth_service.dart';
 import 'services/notification_service.dart';
 import 'services/od_service.dart';
+import 'services/push_service.dart';
 import 'services/session_service.dart';
+import 'theme.dart';
+import 'widgets/common.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   await NotificationService.init();
-  runApp(const SMVECODApp());
+  runApp(const SmvecOdApp());
 }
 
-class SMVECODApp extends StatelessWidget {
-  const SMVECODApp({super.key});
-
-  /// Where Google should send the user back to once they have signed in.
-  ///
-  /// Returning a link here makes the Clerk SDK open the sign-in page in the
-  /// device browser instead of an in-app WebView. That matters: Google refuses
-  /// OAuth from embedded WebViews ("this browser or app may not be secure"),
-  /// so the WebView route works on some devices and silently stalls on others.
-  /// The scheme is registered in AndroidManifest.xml and Info.plist.
-  static Uri? _redirect(BuildContext context, clerk.Strategy strategy) {
-    if (strategy.isOauth || strategy.isEmailLink) {
-      return Uri(scheme: 'smvecod', host: 'auth', path: '/callback');
-    }
-    return null;
-  }
+class SmvecOdApp extends StatelessWidget {
+  const SmvecOdApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    const primaryBlue = Color(0xFF3350B0);
-    const goldAccent = Color(0xFFD4A429);
-
-    // Clerk owns Google sign-in for the whole app, so it wraps everything.
-    return ClerkAuth(
-      config: ClerkAuthConfig(
-        publishableKey: AppConfig.clerkPublishableKey,
-        redirectionGenerator: _redirect,
-        // Carries the browser's callback back into the SDK so the session is
-        // picked up when the user returns to the app.
-        deepLinkStream: AppLinks().uriLinkStream.where(
-              (uri) => uri.scheme == 'smvecod',
-            ),
-      ),
-      child: MaterialApp(
-        title: 'SMVEC OD Management',
-        debugShowCheckedModeBanner: false,
-        localizationsDelegates: ClerkSdkLocalizations.localizationsDelegates,
-        supportedLocales: ClerkSdkLocalizations.supportedLocales,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: primaryBlue,
-            primary: primaryBlue,
-            secondary: goldAccent,
-          ),
-          useMaterial3: true,
-          scaffoldBackgroundColor: const Color(0xFFF6F8FD),
-          fontFamily: 'Roboto',
-        ),
-        home: const _AppGate(),
-      ),
+    return MaterialApp(
+      title: AppConfig.appName,
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light,
+      home: const AppGate(),
     );
   }
 }
 
-/// Drives the whole sign-in journey:
+/// Decides what to show:
 ///
-///   role picker -> per-role sign-in -> (first time) profile -> dashboard
+///   role picker -> sign in -> (first time) profile -> the role's app
 ///
-/// The chosen role only decides which sign-in options to show. What someone can
-/// actually do comes from the profile the server returns.
-class _AppGate extends StatefulWidget {
-  const _AppGate();
+/// The role someone taps only decides which sign-in options appear. What they
+/// are actually allowed to do comes from the profile the server returns.
+class AppGate extends StatefulWidget {
+  const AppGate({super.key});
 
   @override
-  State<_AppGate> createState() => _AppGateState();
+  State<AppGate> createState() => _AppGateState();
 }
 
-class _AppGateState extends State<_AppGate> {
-  AppUser? _currentUser;
+class _AppGateState extends State<AppGate> {
+  final _od = ODService();
+
+  AppUser? _user;
   UserRole? _pickedRole;
-  ({String email, String regToken, UserRole role})? _pendingProfile;
-  bool _restoring = true;
+  bool _booting = true;
+  bool _exchanging = false;
+  String? _error;
+  ({String email, String name})? _needsProfile;
 
   @override
   void initState() {
     super.initState();
-    ODService().onSessionExpired = _onSessionExpired;
-    _restoreSession();
+    _od.onSessionExpired = _onSessionExpired;
+    _boot();
   }
 
-  Future<void> _restoreSession() async {
-    final user = await SessionService.loadUser();
-    if (!mounted) return;
+  /// On launch: a staff password session is restored from the device, and a
+  /// Firebase session is resumed by asking the server who we are.
+  Future<void> _boot() async {
+    final staff = await SessionService.loadStaff();
+    if (staff != null) {
+      await _adopt(staff);
+      if (mounted) setState(() => _booting = false);
+      return;
+    }
+
+    if (AuthService.isSignedIn) {
+      await _exchangeFirebaseSession();
+    }
+    if (mounted) setState(() => _booting = false);
+  }
+
+  /// Trades the current Firebase session for a profile.
+  Future<void> _exchangeFirebaseSession() async {
     setState(() {
-      _currentUser = user;
-      _restoring = false;
+      _exchanging = true;
+      _error = null;
     });
-    ODService().setUser(user);
+    try {
+      final res = await ApiClient.call('SESSION');
+      if (res['needsRegistration'] == true) {
+        setState(() {
+          _needsProfile = (
+            email: res['email']?.toString() ?? '',
+            name: res['name']?.toString() ?? '',
+          );
+          _user = null;
+        });
+      } else {
+        await _adopt(AppUser.fromJson(res['user'] as Map<String, dynamic>));
+      }
+    } on ApiException catch (e) {
+      // The server refused this account - wrong domain, or disabled. Signing
+      // out is the only way forward, so make that the offered action.
+      setState(() => _error = e.message);
+      await AuthService.signOut();
+    } finally {
+      if (mounted) setState(() => _exchanging = false);
+    }
   }
 
-  Future<void> _onLogin(AppUser user) async {
-    await SessionService.saveUser(user);
-    ODService().setUser(user);
+  Future<void> _adopt(AppUser user) async {
+    _od.setUser(user);
+    if (user.staffToken != null) await SessionService.saveStaff(user);
+    await PushService.start();
     if (mounted) {
       setState(() {
-        _currentUser = user;
-        _pendingProfile = null;
+        _user = user;
+        _needsProfile = null;
+        _error = null;
       });
     }
   }
 
-  Future<void> _onUserUpdated(AppUser user) async {
-    await SessionService.saveUser(user);
-    if (mounted) setState(() => _currentUser = user);
-  }
-
-  /// Drops the app session and returns to the role picker. Clerk's own session
-  /// is signed out too when one exists.
-  Future<void> _signOut(ClerkAuthState? authState) async {
+  Future<void> _signOut() async {
+    await PushService.stop();
     await SessionService.clear();
     await NotificationService.reset();
-    ODService().setUser(null);
+    ApiClient.clearStaffToken();
+    await AuthService.signOut();
+    _od.setUser(null);
     if (mounted) {
       setState(() {
-        _currentUser = null;
+        _user = null;
         _pickedRole = null;
-        _pendingProfile = null;
+        _needsProfile = null;
+        _error = null;
       });
-    }
-    if (authState != null && authState.isSignedIn) {
-      await authState.signOut();
     }
   }
 
   void _onSessionExpired() {
-    if (_currentUser == null) return;
-    SessionService.clear();
-    ODService().setUser(null);
+    if (_user == null) return;
+    _signOut();
     if (mounted) {
-      setState(() {
-        _currentUser = null;
-        _pickedRole = null;
-        _pendingProfile = null;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Your session has expired. Please sign in again.')),
-      );
+      showToast(context, 'Your session expired. Please sign in again.', error: true);
     }
-  }
-
-  void _showNotifications(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => const NotificationsSheet(),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_restoring) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_booting || _exchanging) return const _Splash();
+
+    if (_error != null && _user == null) {
+      return _ErrorGate(message: _error!, onRetry: () => setState(() => _error = null));
     }
 
-    return ClerkErrorListener(
-      child: ClerkAuthBuilder(
-        signedOutBuilder: (context, authState) => _buildFlow(context, authState, false),
-        signedInBuilder: (context, authState) => _buildFlow(context, authState, true),
-      ),
-    );
-  }
-
-  Widget _buildFlow(BuildContext context, ClerkAuthState authState, bool clerkSignedIn) {
-    // Already through the door.
-    final user = _currentUser;
-    if (user != null) return _dashboard(user, authState);
-
-    // First sign-in: finish the profile.
-    final pending = _pendingProfile;
+    final pending = _needsProfile;
     if (pending != null) {
       return RegistrationScreen(
         email: pending.email,
-        regToken: pending.regToken,
-        initialRole: pending.role,
-        onRegistered: _onLogin,
-        onCancel: () => _signOut(authState),
+        suggestedName: pending.name,
+        onDone: _adopt,
+        onCancel: _signOut,
       );
     }
 
-    // Signed in with Google but no app session yet: exchange the Clerk token.
-    if (clerkSignedIn) {
-      return LoginScreen(
-        authState: authState,
-        onLogin: _onLogin,
-        onNeedsRegistration: (email, regToken) => setState(
-          () => _pendingProfile = (
-            email: email,
-            regToken: regToken,
-            role: _pickedRole ?? UserRole.student,
-          ),
-        ),
-        onSignOut: () => _signOut(authState),
-      );
+    final user = _user;
+    if (user != null) {
+      switch (user.role) {
+        case UserRole.student:
+          return StudentShell(user: user, onSignOut: _signOut);
+        case UserRole.advisor:
+          return AdvisorShell(user: user, onSignOut: _signOut);
+        case UserRole.hod:
+          return HodShell(user: user, onSignOut: _signOut);
+      }
     }
 
-    // Not signed in anywhere: pick a role, then a sign-in method.
     final role = _pickedRole;
     if (role == null) {
       return RolePickerScreen(onPick: (r) => setState(() => _pickedRole = r));
@@ -227,36 +189,75 @@ class _AppGateState extends State<_AppGate> {
 
     return AuthScreen(
       role: role,
-      onSignedIn: _onLogin,
-      onNeedsRegistration: (email, regToken, pickedRole) => setState(
-        () => _pendingProfile = (email: email, regToken: regToken, role: pickedRole),
-      ),
       onBack: () => setState(() => _pickedRole = null),
+      onFirebaseSignedIn: _exchangeFirebaseSession,
+      onStaffSignedIn: _adopt,
     );
   }
+}
 
-  Widget _dashboard(AppUser user, ClerkAuthState authState) {
-    switch (user.role) {
-      case UserRole.student:
-        return StudentDashboard(
-          user: user,
-          onLogout: () => _signOut(authState),
-          onUserUpdated: _onUserUpdated,
-          onOpenNotifications: () => _showNotifications(context),
-        );
-      case UserRole.advisor:
-        return AdvisorDashboard(
-          user: user,
-          onLogout: () => _signOut(authState),
-          onUserUpdated: _onUserUpdated,
-          onOpenNotifications: () => _showNotifications(context),
-        );
-      case UserRole.hod:
-        return HodDashboard(
-          user: user,
-          onLogout: () => _signOut(authState),
-          onOpenNotifications: () => _showNotifications(context),
-        );
-    }
+class _Splash extends StatelessWidget {
+  const _Splash();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset('assets/app_icon.png', height: 96),
+            const SizedBox(height: 28),
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.4),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Signing you in…',
+              style: TextStyle(color: AppTheme.muted, fontSize: 13.5),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorGate extends StatelessWidget {
+  const _ErrorGate({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.block_rounded, size: 52, color: AppTheme.danger),
+              const SizedBox(height: 18),
+              const Text(
+                'Cannot sign you in',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: AppTheme.muted, height: 1.45),
+              ),
+              const SizedBox(height: 24),
+              FilledButton(onPressed: onRetry, child: const Text('Back to sign in')),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

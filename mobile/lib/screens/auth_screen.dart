@@ -1,54 +1,46 @@
-import 'package:clerk_auth/clerk_auth.dart' as clerk;
-import 'package:clerk_flutter/clerk_flutter.dart';
 import 'package:flutter/material.dart';
 
 import '../config/app_config.dart';
-import '../models/od_request.dart' show AdvisorInfo;
 import '../models/user.dart';
 import '../services/api_client.dart';
-import '../services/clerk_session.dart';
-import '../utils/validators.dart';
+import '../services/auth_service.dart';
+import '../theme.dart';
+import '../widgets/common.dart';
 
 /// Sign-in options for one role.
 ///
 /// Students get Google only: an OD is filed against a real, verified college
-/// address, so there is no password door for them. Advisors and the HOD also
-/// get a password, because they need to sign in on shared devices.
-///
-/// An advisor does not type an address - they pick themselves from the
-/// department roster, which is also the only list of addresses the server will
-/// accept as an advisor.
+/// address, so there is no password door for them. Staff and the HOD also get
+/// a password, because they need to sign in on shared devices.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({
     super.key,
     required this.role,
-    required this.onSignedIn,
-    required this.onNeedsRegistration,
     required this.onBack,
+    required this.onFirebaseSignedIn,
+    required this.onStaffSignedIn,
   });
 
   final UserRole role;
-  final Future<void> Function(AppUser user) onSignedIn;
-  final void Function(String email, String regToken, UserRole role) onNeedsRegistration;
   final VoidCallback onBack;
+  final Future<void> Function() onFirebaseSignedIn;
+  final Future<void> Function(AppUser user) onStaffSignedIn;
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
 }
 
 class _AuthScreenState extends State<AuthScreen> {
+  final _email = TextEditingController();
   final _password = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
 
-  bool _showPasswordForm = false;
+  bool _showPassword = false;
+  bool _obscure = true;
   bool _busy = false;
   String? _error;
 
-  List<AdvisorInfo> _advisors = [];
-  AdvisorInfo? _selectedAdvisor;
-  bool _loadingAdvisors = false;
-
   bool get _isStudent => widget.role == UserRole.student;
-  bool get _isAdvisor => widget.role == UserRole.advisor;
 
   String get _roleLabel => switch (widget.role) {
         UserRole.student => 'Student',
@@ -57,29 +49,16 @@ class _AuthScreenState extends State<AuthScreen> {
       };
 
   @override
-  void dispose() {
-    _password.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    if (widget.role == UserRole.hod) _email.text = AppConfig.hodEmail;
   }
 
-  Future<void> _loadAdvisors() async {
-    setState(() => _loadingAdvisors = true);
-    try {
-      final list = await ClerkSession.advisors();
-      if (mounted) {
-        setState(() {
-          _advisors = list;
-          _loadingAdvisors = false;
-        });
-      }
-    } on ApiException catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = e.message;
-          _loadingAdvisors = false;
-        });
-      }
-    }
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
   }
 
   Future<void> _google() async {
@@ -88,39 +67,37 @@ class _AuthScreenState extends State<AuthScreen> {
       _error = null;
     });
     try {
-      final authState = ClerkAuth.of(context, listen: false);
-      await authState.ssoSignIn(context, clerk.Strategy.oauthGoogle);
-      // On success the Clerk session changes and the gate above this screen
-      // takes over, so there is nothing more to do here.
-    } catch (err) {
-      if (mounted) setState(() => _error = '$err');
+      final user = await AuthService.signInWithGoogle();
+      if (user == null) {
+        setState(() => _busy = false); // cancelled at the picker
+        return;
+      }
+      await widget.onFirebaseSignedIn();
+    } on AuthFailure catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Sign-in failed. Please try again.');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _passwordSignIn() async {
-    final email = _isAdvisor ? _selectedAdvisor?.email : AppConfig.hodEmail;
-    if (email == null) {
-      setState(() => _error = 'Choose which class advisor you are.');
-      return;
-    }
+    if (!_formKey.currentState!.validate()) return;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      final result = await ClerkSession.passwordLogin(
-        role: _isAdvisor ? 'STAFF' : 'HOD',
-        email: email,
-        password: _password.text,
+      final res = await ApiClient.callPublic('PASSWORD_LOGIN', payload: {
+        'email': _email.text.trim(),
+        'password': _password.text,
+      });
+      final user = AppUser.fromJson(
+        res['user'] as Map<String, dynamic>,
+        staffToken: res['token']?.toString(),
       );
-      if (!mounted) return;
-      if (result.needsRegistration) {
-        widget.onNeedsRegistration(result.email ?? '', result.regToken!, widget.role);
-      } else {
-        await widget.onSignedIn(result.user!);
-      }
+      await widget.onStaffSignedIn(user);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
@@ -128,165 +105,134 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  void _openPasswordForm() {
-    setState(() => _showPasswordForm = true);
-    if (_isAdvisor && _advisors.isEmpty) _loadAdvisors();
-  }
-
   @override
   Widget build(BuildContext context) {
-    const primaryBlue = Color(0xFF3350B0);
-
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        foregroundColor: Colors.black87,
         leading: BackButton(onPressed: _busy ? null : widget.onBack),
         title: Text('Sign in as $_roleLabel'),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+          padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Image.asset('assets/college_logo.png', height: 72),
-              const SizedBox(height: 24),
+              Center(child: Image.asset('assets/app_icon.png', height: 88)),
+              const SizedBox(height: 22),
               Text(
-                _isAdvisor
-                    ? 'Only the department’s listed class advisors can sign in here.'
-                    : 'Use your official ${AppConfig.allowedDomain} account.',
+                _isStudent
+                    ? 'Use your college ${AppConfig.allowedDomain} account.'
+                    : 'Only the department’s listed staff can sign in here.',
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.black54),
+                style: const TextStyle(color: AppTheme.muted, height: 1.45),
               ),
               const SizedBox(height: 28),
 
               OutlinedButton.icon(
                 onPressed: _busy ? null : _google,
-                icon: const Icon(Icons.g_mobiledata, size: 30),
+                icon: Image.asset(
+                  'assets/app_icon.png',
+                  height: 0,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
                 label: const Text('Continue with Google'),
                 style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  side: const BorderSide(color: Color(0xFFCBD5E1)),
-                  foregroundColor: Colors.black87,
-                  textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  padding: const EdgeInsets.symmetric(vertical: 15),
                 ),
               ),
 
               if (!_isStudent) ...[
-                const SizedBox(height: 20),
+                const SizedBox(height: 18),
                 Row(
                   children: [
                     const Expanded(child: Divider()),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Text('or', style: TextStyle(color: Colors.grey.shade600)),
+                      child: Text('or',
+                          style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
                     ),
                     const Expanded(child: Divider()),
                   ],
                 ),
                 const SizedBox(height: 12),
-                if (!_showPasswordForm)
+                if (!_showPassword)
                   TextButton(
-                    onPressed: _busy ? null : _openPasswordForm,
+                    onPressed: _busy ? null : () => setState(() => _showPassword = true),
                     child: const Text('Sign in with a password instead'),
                   )
-                else ...[
-                  if (_isAdvisor) _advisorPicker() else _hodIdentity(),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _password,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Password',
-                      border: OutlineInputBorder(),
+                else
+                  Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        TextFormField(
+                          controller: _email,
+                          readOnly: widget.role == UserRole.hod,
+                          keyboardType: TextInputType.emailAddress,
+                          autocorrect: false,
+                          decoration: InputDecoration(
+                            labelText: widget.role == UserRole.hod
+                                ? 'HOD email'
+                                : 'Your official email',
+                            hintText: 'name${AppConfig.allowedDomain}',
+                            prefixIcon: const Icon(Icons.alternate_email_rounded, size: 20),
+                          ),
+                          validator: (v) => (v == null || v.trim().isEmpty)
+                              ? 'Enter your email address.'
+                              : null,
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _password,
+                          obscureText: _obscure,
+                          decoration: InputDecoration(
+                            labelText: 'Password',
+                            prefixIcon: const Icon(Icons.lock_outline_rounded, size: 20),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _obscure
+                                    ? Icons.visibility_outlined
+                                    : Icons.visibility_off_outlined,
+                                size: 20,
+                              ),
+                              onPressed: () => setState(() => _obscure = !_obscure),
+                            ),
+                          ),
+                          validator: (v) => (v == null || v.isEmpty)
+                              ? 'Enter your password.'
+                              : null,
+                          onFieldSubmitted: (_) => _busy ? null : _passwordSignIn(),
+                        ),
+                        const SizedBox(height: 14),
+                        FilledButton(
+                          onPressed: _busy ? null : _passwordSignIn,
+                          child: Text(_busy ? 'Signing in…' : 'Sign in'),
+                        ),
+                      ],
                     ),
-                    onSubmitted: (_) => _busy ? null : _passwordSignIn(),
                   ),
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: primaryBlue,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                    onPressed: _busy ? null : _passwordSignIn,
-                    child: Text(_busy ? 'Signing in…' : 'Sign in'),
-                  ),
-                ],
               ],
 
               if (_error != null) ...[
                 const SizedBox(height: 20),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.red.shade200),
-                  ),
-                  child: Text(_error!, style: TextStyle(color: Colors.red.shade900)),
-                ),
+                ErrorBanner(message: _error!),
               ],
 
               if (_busy) ...[
-                const SizedBox(height: 24),
-                const Center(child: CircularProgressIndicator()),
+                const SizedBox(height: 22),
+                const Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2.2),
+                  ),
+                ),
               ],
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  /// The advisor chooses their class rather than typing an address, so the
-  /// address is always one the server will accept.
-  Widget _advisorPicker() {
-    if (_loadingAdvisors) {
-      return const Row(
-        children: [
-          SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-          SizedBox(width: 12),
-          Text('Loading class advisors…'),
-        ],
-      );
-    }
-    if (_advisors.isEmpty) {
-      return Row(
-        children: [
-          const Expanded(child: Text('Could not load the advisor list.')),
-          TextButton(onPressed: _loadAdvisors, child: const Text('Retry')),
-        ],
-      );
-    }
-    return DropdownButtonFormField<AdvisorInfo>(
-      initialValue: _selectedAdvisor,
-      isExpanded: true,
-      decoration: const InputDecoration(
-        labelText: 'You are',
-        border: OutlineInputBorder(),
-      ),
-      items: _advisors
-          .map((a) => DropdownMenuItem(
-                value: a,
-                child: Text(
-                  '${a.name} — ${yearLabel(a.year)} ${a.section}',
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ))
-          .toList(),
-      onChanged: (v) => setState(() => _selectedAdvisor = v),
-    );
-  }
-
-  Widget _hodIdentity() {
-    return TextField(
-      controller: TextEditingController(text: AppConfig.hodEmail),
-      readOnly: true,
-      decoration: const InputDecoration(
-        labelText: 'HOD email',
-        border: OutlineInputBorder(),
       ),
     );
   }

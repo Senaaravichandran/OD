@@ -102,6 +102,36 @@ class NotificationService {
     }
   }
 
+  /// Shows a single notification immediately. Used for foreground pushes,
+  /// which Android does not display on the app's behalf.
+  static Future<void> show({
+    required String id,
+    required String title,
+    required String body,
+  }) async {
+    if (!_ready) await init();
+    if (!_ready) return;
+    try {
+      await _plugin.show(
+        id.hashCode & 0x7fffffff,
+        title,
+        body,
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            _channelId,
+            'OD updates',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+          iOS: DarwinNotificationDetails(),
+        ),
+      );
+      _seen.add(id);
+    } catch (err) {
+      debugPrint('Could not show notification: $err');
+    }
+  }
+
   /// Forgets what has been shown, so a new account starts clean.
   static Future<void> reset() async {
     _seen = {};
