@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "1042819983121",
+    "project_id": "smvec-od-management",
+    "storage_bucket": "smvec-od-management.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1042819983121:android:50358d68bb1cda956d8eb0",
+        "android_client_info": {
+          "package_name": "edu.smvec.it.smvec_od"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1042819983121-uft8cntcvpequtsl3ladkj9h9lcb7eku.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "edu.smvec.it.smvec_od",
+            "certificate_hash": "6eb7f41fe1fce90df80d48f897f5e965dcf7be03"
+          }
+        },
+        {
+          "client_id": "1042819983121-7t4v2hfakpn9amc2m2ppdss7ubte61jq.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAukBHPT106Hk0oIcl_XFrXmrwhjg2OgFA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1042819983121-7t4v2hfakpn9amc2m2ppdss7ubte61jq.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

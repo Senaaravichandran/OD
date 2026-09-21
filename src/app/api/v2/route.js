@@ -10,7 +10,7 @@
 import { NextResponse } from 'next/server';
 import {
   HttpError, clean, dateOf, identify, passwordIdentify, publicUser,
-  requestForActor, requireRole, sectionOf, text, yearOf, advisorClassIds,
+  requestForActor, requireRole, sectionOf, signStaffToken, text, yearOf,
 } from '@/lib/api-core';
 import { audit, one, query, transaction } from '@/lib/db';
 import { sendPush } from '@/lib/firebase-admin';
@@ -574,7 +574,8 @@ export async function POST(req) {
         actorUserId: auth.userId, actorEmail: auth.email, actorRole: auth.role,
         action: 'PASSWORD_LOGIN', entityType: 'user', entityId: auth.userId,
       });
-      return json({ ...(await session(auth)), staffToken: null });
+      // Staff have no Firebase account, so they carry a signed token instead.
+      return json({ ...(await session(auth)), token: signStaffToken(auth) });
     }
 
     const auth = await identify(req);

@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
+
 import '../config/app_config.dart';
+import 'auth_service.dart';
 
 class ApiException implements Exception {
   final String message;
@@ -9,18 +12,38 @@ class ApiException implements Exception {
   ApiException(this.message, [this.statusCode]);
 
   bool get isAuthError => statusCode == 401;
+  bool get isConflict => statusCode == 409;
 
   @override
   String toString() => message;
 }
 
-/// Minimal JSON client for /api/mobile. Every call is a single POST.
+/// JSON client for /api/v2. Every call is a single POST of
+/// `{action, payload}`; the Firebase ID token rides in the Authorization
+/// header and is refreshed automatically when the server says it expired.
 class ApiClient {
+  /// A staff session token, set after a password sign-in. Students never have
+  /// one - they authenticate with Firebase on every call.
+  static String? _staffToken;
+
+  static void setStaffToken(String? token) => _staffToken = token;
+  static void clearStaffToken() => _staffToken = null;
+  static bool get hasStaffToken => _staffToken != null;
+
   static Future<Map<String, dynamic>> call(
     String action, {
     Map<String, dynamic> payload = const {},
-    String? token,
+    bool authenticated = true,
+    bool retriedAfterRefresh = false,
   }) async {
+    String? token = _staffToken;
+    if (authenticated && token == null) {
+      token = await AuthService.idToken(force: retriedAfterRefresh);
+      if (token == null) {
+        throw ApiException('You are not signed in. Please sign in again.', 401);
+      }
+    }
+
     http.Response res;
     try {
       res = await http
@@ -32,7 +55,7 @@ class ApiClient {
             },
             body: jsonEncode({'action': action, 'payload': payload}),
           )
-          .timeout(const Duration(seconds: 20));
+          .timeout(const Duration(seconds: 30));
     } on TimeoutException {
       throw ApiException('The server took too long to respond. Please try again.');
     } catch (_) {
@@ -46,9 +69,30 @@ class ApiClient {
       throw ApiException('Unexpected server response (${res.statusCode}).', res.statusCode);
     }
 
+    if (res.statusCode == 401 && !retriedAfterRefresh && _staffToken == null) {
+      // The token may simply have aged out mid-session; mint a fresh one and
+      // try once more before troubling the user.
+      return call(
+        action,
+        payload: payload,
+        authenticated: authenticated,
+        retriedAfterRefresh: true,
+      );
+    }
+
     if (res.statusCode >= 400 || data['success'] != true) {
-      throw ApiException(data['error']?.toString() ?? 'Something went wrong.', res.statusCode);
+      throw ApiException(
+        data['error']?.toString() ?? 'Something went wrong.',
+        res.statusCode,
+      );
     }
     return data;
   }
+
+  /// Calls that work before anyone is signed in, such as the class list.
+  static Future<Map<String, dynamic>> callPublic(
+    String action, {
+    Map<String, dynamic> payload = const {},
+  }) =>
+      call(action, payload: payload, authenticated: false);
 }

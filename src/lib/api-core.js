@@ -5,10 +5,50 @@
 // caller is allowed to *do*.
 
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { one, query } from './db';
 import { verifyIdToken } from './firebase-admin';
 
 export const DOMAIN = '@smvec.ac.in';
+
+// Staff who sign in with a password have no Firebase account, so they get a
+// short HMAC-signed token instead. Students never use this path.
+const STAFF_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+
+function signingSecret() {
+  const explicit = clean(process.env.AUTH_SECRET);
+  if (!explicit) throw new HttpError(503, 'Server signing key is not configured.');
+  return explicit;
+}
+
+function timingSafeEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+export function signStaffToken({ staffId, email, role }) {
+  const body = Buffer.from(
+    JSON.stringify({ s: staffId, e: email, r: role, x: Date.now() + STAFF_TOKEN_TTL_MS })
+  ).toString('base64url');
+  const sig = crypto.createHmac('sha256', signingSecret()).update(body).digest('base64url');
+  return `staff.${body}.${sig}`;
+}
+
+function readStaffToken(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3 || parts[0] !== 'staff') return null;
+  const [, body, sig] = parts;
+  const expected = crypto.createHmac('sha256', signingSecret()).update(body).digest('base64url');
+  if (!timingSafeEqual(sig, expected)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(body, 'base64url').toString());
+    if (!data?.x || Date.now() > data.x) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -46,6 +86,27 @@ export async function assertAllowedEmail(email) {
 export async function identify(req) {
   const token = bearer(req);
   if (!token) throw new HttpError(401, 'Please sign in first.');
+
+  // Staff password session: re-read the account each time so a removal or a
+  // role change takes effect immediately rather than living in the token.
+  if (token.startsWith('staff.')) {
+    const data = readStaffToken(token);
+    if (!data) throw new HttpError(401, 'Your session expired. Please sign in again.');
+    const staff = await one(
+      `select s.id as staff_id, s.name, s.is_hod, u.id as user_id
+         from staff s join users u on u.id = s.user_id
+        where s.id = $1 and s.email = $2`,
+      [data.s, data.e]
+    );
+    if (!staff) throw new HttpError(401, 'This account no longer exists.');
+    return {
+      userId: staff.user_id,
+      staffId: staff.staff_id,
+      email: data.e,
+      role: staff.is_hod ? 'HOD' : 'ADVISOR',
+      name: staff.name,
+    };
+  }
 
   let decoded;
   try {

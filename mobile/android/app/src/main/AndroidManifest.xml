@@ -3,7 +3,7 @@
     <!-- Required from Android 13 to show OD approval/rejection notifications. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
-        android:label="SMVEC OD"
+        android:label="SMVEC-IT OD"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
