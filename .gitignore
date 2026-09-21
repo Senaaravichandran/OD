@@ -48,3 +48,6 @@ env.download
 # local tooling / generated reports
 .claude/
 mobile/android/build/
+
+# Supabase CLI scratch state (machine-local, references the linked project)
+supabase/.temp/
