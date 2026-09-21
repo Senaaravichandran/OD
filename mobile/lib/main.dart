@@ -20,9 +20,74 @@ import 'widgets/common.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  await NotificationService.init();
-  runApp(const SmvecOdApp());
+
+  // If Firebase cannot start there is nothing the app can do, but it must say
+  // so rather than die into a black screen - that is impossible to diagnose
+  // from a phone.
+  String? startupError;
+  try {
+    await Firebase.initializeApp();
+  } catch (err) {
+    startupError = 'Could not start sign-in services.\n\n$err';
+  }
+
+  // Notifications are optional; a device that refuses them still works.
+  try {
+    await NotificationService.init();
+  } catch (_) {}
+
+  runApp(startupError == null
+      ? const SmvecOdApp()
+      : _StartupFailureApp(message: startupError));
+}
+
+/// Shown when the app cannot start at all, so the reason is visible on the
+/// device instead of a blank window.
+class _StartupFailureApp extends StatelessWidget {
+  const _StartupFailureApp({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light,
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline_rounded,
+                    size: 54, color: AppTheme.danger),
+                const SizedBox(height: 18),
+                const Text(
+                  'SMVEC-IT OD could not start',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 12.5, color: AppTheme.muted, height: 1.45),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Please reinstall the latest APK, or contact the department.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: AppTheme.muted),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class SmvecOdApp extends StatelessWidget {

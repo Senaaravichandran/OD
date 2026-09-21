@@ -21,6 +21,9 @@ plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.11.1" apply false
     id("org.jetbrains.kotlin.android") version "2.2.20" apply false
+    // Reads google-services.json into the build. Without it Firebase has no
+    // configuration at runtime and initializeApp() throws on launch.
+    id("com.google.gms.google-services") version "4.4.2" apply false
 }
 
 include(":app")
