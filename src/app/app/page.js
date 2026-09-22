@@ -206,7 +206,7 @@ export default function PortalPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Sign in (handled entirely by Clerk)
+// Sign in (Google, through Firebase)
 // ---------------------------------------------------------------------------
 
 function SignInView({ error, disabled = false }) {
@@ -268,31 +268,27 @@ function SignInView({ error, disabled = false }) {
 // ---------------------------------------------------------------------------
 
 function RegisterView({ email, suggestedName, onDone, onCancel }) {
-  const [role, setRole] = useState('STUDENT');
-  const [form, setForm] = useState({ name: suggestedName || '', rollNumber: '', year: '', section: '', batch: currentBatch() });
-  const [staffCode, setStaffCode] = useState('');
+  const [form, setForm] = useState({
+    name: suggestedName || '', rollNumber: '', year: '', section: '',
+  });
   const [classes, setClasses] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const set = (k) => (ev) => setForm((f) => ({ ...f, [k]: ev.target.value }));
-  // Students never pick an advisor: the class they are in decides it.
-  const isStudent = role === 'STUDENT';
-  const yearOptions = isStudent && classes ? classes.map((c) => c.year) : YEARS;
-  const sectionOptions = (() => {
-    if (!isStudent || !classes) return SECTIONS;
-    const y = classes.find((c) => String(c.year) === String(form.year));
-    return y ? y.sections.map((s) => s.section) : [];
-  })();
-  const resolvedAdvisor = (() => {
-    if (!isStudent || !classes) return null;
-    const y = classes.find((c) => String(c.year) === String(form.year));
-    return y ? y.sections.find((s) => s.section === form.section) || null : null;
-  })();
+
+  // Students never pick an advisor: the class they are in decides it, and the
+  // server derives it from the class rather than trusting anything sent here.
+  const yearOptions = classes ? classes.map((c) => c.year) : YEARS;
+  const sectionsFor = (year) => {
+    const y = classes?.find((c) => String(c.year) === String(year));
+    return y ? y.sections : [];
+  };
+  const sectionOptions = classes ? sectionsFor(form.year).map((s) => s.section) : SECTIONS;
+  const resolvedAdvisor = sectionsFor(form.year).find((s) => s.section === form.section) || null;
   const onYearChange = (ev) => setForm((f) => ({ ...f, year: ev.target.value, section: '' }));
 
-
-  // Needed before the student has a session, so ADVISORS is public.
+  // Needed before the student has a profile, so CLASSES is public.
   useEffect(() => {
     let cancelled = false;
     api('CLASSES', {}, { authenticated: false })
@@ -308,14 +304,12 @@ function RegisterView({ email, suggestedName, onDone, onCancel }) {
     setBusy(true);
     setError('');
     try {
-      const payload = { role, name: form.name, year: form.year, section: form.section };
-      if (role === 'STUDENT') {
-        payload.registerNumber = form.rollNumber;
-      } else {
-        payload.batch = form.batch;
-        payload.staffCode = staffCode;
-      }
-      const res = await api('REGISTER', payload);
+      const res = await api('REGISTER', {
+        name: form.name,
+        registerNumber: form.rollNumber,
+        year: form.year,
+        section: form.section,
+      });
       onDone(res.user);
     } catch (err) {
       setError(err.message);
@@ -335,55 +329,50 @@ function RegisterView({ email, suggestedName, onDone, onCancel }) {
           </div>
 
           <form className={styles.form} onSubmit={submit}>
-          <Field label="I am a">
-            <div className={styles.roleSelector}>
-              {[
-                ['STUDENT', 'Student'],
-                ['STAFF', 'Class Advisor'],
-              ].map(([v, label]) => (
-                <button
-                  key={v}
-                  type="button"
-                  className={role === v ? styles.roleTabActive : styles.roleTab}
-                  onClick={() => setRole(v)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </Field>
+            <Field label="Full name">
+              <input
+                className={styles.input}
+                value={form.name}
+                onChange={set('name')}
+                required
+                maxLength={80}
+              />
+            </Field>
 
-          <Field label="Full name">
-            <input className={styles.input} value={form.name} onChange={set('name')} required maxLength={80} />
-          </Field>
+            <Field label="Register number">
+              <input
+                className={styles.input}
+                value={form.rollNumber}
+                onChange={set('rollNumber')}
+                required
+                maxLength={30}
+              />
+            </Field>
 
-          {role === 'STUDENT' && (
-            <>
-              <Field label="Register number">
-                <input className={styles.input} value={form.rollNumber} onChange={set('rollNumber')} required maxLength={30} />
-              </Field>
-            </>
-          )}
+            <Field label="Year" group>
+              <select className={styles.input} value={form.year} onChange={onYearChange} required>
+                <option value="">Select year</option>
+                {yearOptions.map((y) => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+            </Field>
 
-          <Field label="Year" group>
-            <select className={styles.input} value={form.year} onChange={onYearChange} required>
-              <option value="">Select year</option>
-              {yearOptions.map((y) => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
-          </Field>
+            <Field label="Section" group>
+              <select
+                className={styles.input}
+                value={form.section}
+                onChange={set('section')}
+                required
+                disabled={!form.year}
+              >
+                <option value="">{form.year ? 'Select section' : 'Choose year first'}</option>
+                {sectionOptions.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </Field>
 
-          <Field label="Section" group>
-            <select className={styles.input} value={form.section} onChange={set('section')} required disabled={!form.year}>
-              <option value="">{form.year ? 'Select section' : 'Choose year first'}</option>
-              {sectionOptions.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          </Field>
-
-          {role === 'STUDENT' && (
             <Field label="Class advisor">
               <p className={styles.muted}>
                 {classes === null
@@ -393,34 +382,15 @@ function RegisterView({ email, suggestedName, onDone, onCancel }) {
                     : 'Choose your year and section'}
               </p>
             </Field>
-          )}
 
-          {role === 'STAFF' && (
-            <>
-              <Field label="Batch">
-                <input className={styles.input} value={form.batch} onChange={set('batch')} required placeholder="2023-2027" />
-              </Field>
-              <Field label="Staff code">
-                <input
-                  className={styles.input}
-                  type="password"
-                  value={staffCode}
-                  onChange={(ev) => setStaffCode(ev.target.value)}
-                  required
-                  placeholder="Provided by the department"
-                />
-              </Field>
-            </>
-          )}
+            {error && <ErrorBox text={error} />}
 
-          {error && <ErrorBox text={error} />}
-
-          <button type="submit" className={styles.primaryBtn} disabled={busy}>
-            {busy ? 'Saving…' : 'Continue'}
-          </button>
-          <button type="button" className={styles.linkBtn} onClick={onCancel}>
-            Sign out
-          </button>
+            <button type="submit" className={styles.primaryBtn} disabled={busy}>
+              {busy ? 'Saving…' : 'Continue'}
+            </button>
+            <button type="button" className={styles.linkBtn} onClick={onCancel}>
+              Sign out
+            </button>
           </form>
         </div>
       </div>
@@ -482,8 +452,8 @@ function Dashboard({ session, onLogout, onUserUpdate }) {
       return { ...d, requests: [request, ...rest].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))) };
     });
 
-  const roleName = { STUDENT: 'Student portal', STAFF: 'Class advisor portal', HOD: 'HOD portal' }[user.role];
-  const badgeClass = { STUDENT: styles.badgeStudent, STAFF: styles.badgeStaff, HOD: styles.badgeHod }[user.role];
+  const roleName = { STUDENT: 'Student portal', ADVISOR: 'Class advisor portal', HOD: 'HOD portal' }[user.role];
+  const badgeClass = { STUDENT: styles.badgeStudent, ADVISOR: styles.badgeStaff, HOD: styles.badgeHod }[user.role];
   const ctx = { user, call, upsert, refresh, setToast, onUserUpdate };
 
   return (
@@ -491,7 +461,7 @@ function Dashboard({ session, onLogout, onUserUpdate }) {
       <TopBar subtitle={roleName}>
         <span className={`${styles.roleBadge} ${badgeClass}`}>
           {user.name}
-          {user.role === 'STUDENT' && user.rollNumber ? ` · ${user.rollNumber}` : ''}
+          {user.role === 'STUDENT' && user.registerNumber ? ` · ${user.registerNumber}` : ''}
         </span>
         <button type="button" className={styles.iconBtn} onClick={() => setShowNotifs(true)} aria-label="Notifications">
           🔔
@@ -507,7 +477,7 @@ function Dashboard({ session, onLogout, onUserUpdate }) {
           <p className={styles.muted}>Loading…</p>
         ) : user.role === 'STUDENT' ? (
           <StudentView data={data} ctx={ctx} />
-        ) : user.role === 'STAFF' ? (
+        ) : user.role === 'ADVISOR' ? (
           <AdvisorView data={data} ctx={ctx} />
         ) : (
           <HodView data={data} ctx={ctx} />
@@ -544,6 +514,7 @@ function Dashboard({ session, onLogout, onUserUpdate }) {
 function StudentView({ data, ctx }) {
   const { user } = ctx;
   const [showNew, setShowNew] = useState(false);
+  const [editClass, setEditClass] = useState(false);
   const [resultFor, setResultFor] = useState(null);
   const reqs = data.requests;
   const count = (fn) => reqs.filter(fn).length;
@@ -554,8 +525,11 @@ function StudentView({ data, ctx }) {
         <div>
           <h2 className={styles.bannerTitle}>Hello, {user.name}</h2>
           <p className={styles.bannerSub}>
-            {user.rollNumber} · Year {user.year} · Section {user.section} · {user.department}
+            {user.registerNumber} · Year {user.year} · Section {user.section} · {user.department}
           </p>
+          <button type="button" className={styles.linkBtn} onClick={() => setEditClass(true)}>
+            Wrong class?
+          </button>
         </div>
         <button type="button" className={styles.bannerBtn} onClick={() => setShowNew(true)}>+ New OD request</button>
       </section>
@@ -583,6 +557,7 @@ function StudentView({ data, ctx }) {
       )}
 
       {showNew && <NewOdModal ctx={ctx} onClose={() => setShowNew(false)} />}
+      {editClass && <ClassModal ctx={ctx} onClose={() => setEditClass(false)} />}
       {resultFor && <ResultModal ctx={ctx} request={resultFor} onClose={() => setResultFor(null)} />}
     </>
   );
@@ -598,7 +573,7 @@ function NewOdModal({ ctx, onClose }) {
       eventName: '',
       eventDate: d.toISOString().slice(0, 10),
       description: '',
-      teamMembers: [`${user.name} (${user.rollNumber || ''})`],
+      teamMembers: [`${user.name} (${user.registerNumber || ''})`],
     };
   });
   const [error, setError] = useState('');
@@ -703,8 +678,10 @@ function NewOdModal({ ctx, onClose }) {
 
 function ResultModal({ ctx, request, onClose }) {
   const { call, upsert, setToast } = ctx;
-  const [status, setStatus] = useState('PARTICIPATION');
+  const [status, setStatus] = useState('PARTICIPATED');
   const [projectName, setProjectName] = useState(request.eventName);
+  const [prize, setPrize] = useState('');
+  const [prizeDetails, setPrizeDetails] = useState('');
   const [description, setDescription] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -714,7 +691,15 @@ function ResultModal({ ctx, request, onClose }) {
     setBusy(true);
     setError('');
     try {
-      const res = await call('SUBMIT_RESULT', { reqId: request.id, status, projectName, description, prize });
+      const res = await call('SUBMIT_RESULT', {
+        reqId: request.id,
+        status,
+        projectName,
+        description,
+        // Only meaningful for a win, and the server insists on it there.
+        prize: status === 'WON' ? prize : '',
+        prizeDetails: status === 'WON' ? prizeDetails : '',
+      });
       upsert(res.request);
       setToast('Result saved.');
       onClose();
@@ -731,7 +716,7 @@ function ResultModal({ ctx, request, onClose }) {
         <Field label="Outcome" group>
           <div className={styles.segmented}>
             {[
-              ['PARTICIPATION', 'Participated'],
+              ['PARTICIPATED', 'Participated'],
               ['WON', 'Won a prize'],
             ].map(([v, l]) => (
               <button key={v} type="button" className={status === v ? styles.segActive : ''} onClick={() => setStatus(v)}>
@@ -743,6 +728,29 @@ function ResultModal({ ctx, request, onClose }) {
         <Field label="Project / topic name">
           <input className={styles.input} value={projectName} onChange={(e) => setProjectName(e.target.value)} maxLength={120} />
         </Field>
+        {status === 'WON' && (
+          <>
+            <Field label="Prize">
+              <input
+                className={styles.input}
+                value={prize}
+                onChange={(e) => setPrize(e.target.value)}
+                required
+                maxLength={80}
+                placeholder="First place, Runner-up, Best paper…"
+              />
+            </Field>
+            <Field label="Prize details">
+              <input
+                className={styles.input}
+                value={prizeDetails}
+                onChange={(e) => setPrizeDetails(e.target.value)}
+                maxLength={300}
+                placeholder="Cash award, certificate, trophy…"
+              />
+            </Field>
+          </>
+        )}
         <Field label="Details">
           <textarea className={styles.input} rows={3} value={description} onChange={(e) => setDescription(e.target.value)} maxLength={1000} />
         </Field>
@@ -762,7 +770,6 @@ function ResultModal({ ctx, request, onClose }) {
 function AdvisorView({ data, ctx }) {
   const { user } = ctx;
   const [tab, setTab] = useState('PENDING');
-  const [editClass, setEditClass] = useState(false);
   const [deciding, setDeciding] = useState(null);
   const pending = data.requests.filter((r) => r.status === 'PENDING_ADVISOR');
   const reviewed = data.requests.filter((r) => r.status !== 'PENDING_ADVISOR');
@@ -774,10 +781,15 @@ function AdvisorView({ data, ctx }) {
         <div>
           <h2 className={styles.bannerTitle}>{user.name}</h2>
           <p className={styles.bannerSub}>
-            Class advisor · Year {user.year} · Section {user.section} · Batch {user.batch}
+            {/* Assigned by the department, so it is shown rather than edited. */}
+            Class advisor ·{' '}
+            {(user.classes || []).length
+              ? (user.classes || [])
+                .map((c) => `Year ${c.year} Section ${c.section}`)
+                .join(', ')
+              : 'No class assigned yet'}
           </p>
         </div>
-        <button type="button" className={styles.bannerBtn} onClick={() => setEditClass(true)}>Edit class details</button>
       </section>
 
       <div className={styles.kpiGrid}>
@@ -812,7 +824,6 @@ function AdvisorView({ data, ctx }) {
         </div>
       )}
 
-      {editClass && <ClassModal ctx={ctx} onClose={() => setEditClass(false)} />}
       {deciding && <DecisionModal ctx={ctx} action="ADVISOR_DECIDE" {...deciding} onClose={() => setDeciding(null)} />}
     </>
   );
@@ -820,18 +831,41 @@ function AdvisorView({ data, ctx }) {
 
 function ClassModal({ ctx, onClose }) {
   const { user, call, onUserUpdate, setToast } = ctx;
-  const [form, setForm] = useState({ year: String(user.year || ''), section: user.section || '', batch: user.batch || currentBatch() });
+  const [form, setForm] = useState({
+    year: String(user.year || ''), section: user.section || '',
+  });
+  const [classes, setClasses] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api('CLASSES', {}, { authenticated: false })
+      .then((res) => !cancelled && setClasses(res.classes || []))
+      .catch(() => !cancelled && setClasses([]));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const sectionsFor = (year) => {
+    const y = classes?.find((c) => String(c.year) === String(year));
+    return y ? y.sections : [];
+  };
+  const yearOptions = classes ? classes.map((c) => c.year) : YEARS;
+  const sectionOptions = classes ? sectionsFor(form.year).map((s) => s.section) : SECTIONS;
+  const advisor = sectionsFor(form.year).find((s) => s.section === form.section) || null;
 
   const submit = async (ev) => {
     ev.preventDefault();
     setBusy(true);
     setError('');
     try {
-      const res = await call('UPDATE_CLASS', { ...form, year: Number(form.year) });
+      const res = await call('CHANGE_CLASS', {
+        year: Number(form.year), section: form.section,
+      });
       onUserUpdate(res.user);
-      setToast('Class details updated.');
+      setToast('Your class has been updated.');
       onClose();
     } catch (err) {
       setError(err.message);
@@ -841,29 +875,52 @@ function ClassModal({ ctx, onClose }) {
   };
 
   return (
-    <Modal title="Class details" onClose={onClose}>
+    <Modal title="Correct your class" onClose={onClose}>
       <form onSubmit={submit} className={styles.form}>
+        <p className={styles.muted}>
+          Your class decides which advisor reviews your requests. Requests you
+          have already filed stay with the advisor who received them.
+        </p>
         <div className={styles.grid2}>
           <Field label="Year">
-            <select className={styles.input} value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} required>
-              {YEARS.map((y) => (
+            <select
+              className={styles.input}
+              value={form.year}
+              onChange={(e) => setForm({ year: e.target.value, section: '' })}
+              required
+            >
+              <option value="">Select year</option>
+              {yearOptions.map((y) => (
                 <option key={y} value={y}>Year {y}</option>
               ))}
             </select>
           </Field>
           <Field label="Section">
-            <select className={styles.input} value={form.section} onChange={(e) => setForm({ ...form, section: e.target.value })} required>
-              {SECTIONS.map((s) => (
+            <select
+              className={styles.input}
+              value={form.section}
+              onChange={(e) => setForm({ ...form, section: e.target.value })}
+              required
+              disabled={!form.year}
+            >
+              <option value="">{form.year ? 'Select section' : 'Choose year first'}</option>
+              {sectionOptions.map((s) => (
                 <option key={s} value={s}>Sec {s}</option>
               ))}
             </select>
           </Field>
         </div>
-        <Field label="Batch (e.g. 2023-2027)">
-          <input className={styles.input} value={form.batch} onChange={(e) => setForm({ ...form, batch: e.target.value })} required />
+        <Field label="Class advisor">
+          <p className={styles.muted}>
+            {classes === null
+              ? 'Loading classes…'
+              : advisor
+                ? advisor.advisorName
+                : 'Choose your year and section'}
+          </p>
         </Field>
         <ErrorBox text={error} />
-        <button type="submit" className={styles.primaryBtn} disabled={busy}>
+        <button type="submit" className={styles.primaryBtn} disabled={busy || !advisor}>
           {busy ? 'Saving…' : 'Save'}
         </button>
       </form>
@@ -887,12 +944,12 @@ function HodView({ data, ctx }) {
     const q = query.trim().toLowerCase();
     if (!q) return base;
     return base.filter((r) =>
-      [r.studentName, r.rollNumber, r.eventName, r.advisorName, r.id, r.eventType].some((v) => String(v || '').toLowerCase().includes(q))
+      [r.studentName, r.registerNumber, r.eventName, r.advisorName, r.id, r.eventType].some((v) => String(v || '').toLowerCase().includes(q))
     );
   }, [tab, reqs, awaiting, query]);
 
   const exportCsv = () => {
-    const cols = ['id', 'studentName', 'rollNumber', 'year', 'section', 'advisorName', 'eventType', 'eventName', 'eventDate', 'submissionType', 'status', 'resultStatus', 'createdAt'];
+    const cols = ['id', 'studentName', 'registerNumber', 'year', 'section', 'advisorName', 'eventType', 'eventName', 'eventDate', 'submissionType', 'status', 'resultStatus', 'createdAt'];
     const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [cols.join(','), ...reqs.map((r) => cols.map((c) => escape(r[c])).join(','))].join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
@@ -1010,7 +1067,7 @@ function DecisionModal({ ctx, action, r, approve, onClose }) {
     <Modal title={`${approve ? 'Approve' : 'Reject'} · ${r.eventName}`} onClose={onClose}>
       <form onSubmit={submit} className={styles.form}>
         <p className={styles.muted}>
-          {r.studentName} ({r.rollNumber}) · {r.eventType} on {fmtDate(r.eventDate)}
+          {r.studentName} ({r.registerNumber}) · {r.eventType} on {fmtDate(r.eventDate)}
         </p>
         <Field label={approve ? 'Remarks (optional)' : 'Reason for rejection'}>
           <textarea className={styles.input} rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} maxLength={500} required={!approve} />
@@ -1039,7 +1096,7 @@ function RequestCard({ r, showStudent, showAdvisor, showStepper, children }) {
           <p className={styles.muted}>
             {fmtDate(r.eventDate)}
             {r.eventDay ? ` (${r.eventDay})` : ''}
-            {showStudent && ` · ${r.studentName} (${r.rollNumber}) · Year ${r.year} Sec ${r.section}`}
+            {showStudent && ` · ${r.studentName} (${r.registerNumber}) · Year ${r.year} Sec ${r.section}`}
             {showAdvisor && ` · Advisor: ${r.advisorName}`}
             {!showStudent && ` · Advisor: ${r.advisorName}`}
           </p>
@@ -1058,6 +1115,7 @@ function RequestCard({ r, showStudent, showAdvisor, showStepper, children }) {
           {r.hodRemarks && <p><strong>HOD:</strong> {r.hodRemarks}</p>}
         </div>
       )}
+      {r.files?.length > 0 && <Attachments files={r.files} />}
       {r.resultStatus && r.resultStatus !== 'PENDING' && (
         <p className={styles.result}>
           {r.resultStatus === 'WON' ? '🏆 Won' : '🎖️ Participated'} · {r.resultProjectName}
@@ -1066,6 +1124,58 @@ function RequestCard({ r, showStudent, showAdvisor, showStepper, children }) {
       )}
       {children && <div className={styles.actions}>{children}</div>}
     </article>
+  );
+}
+
+const FILE_KIND = {
+  CERTIFICATE: 'Certificate',
+  PRIZE_PHOTO: 'Prize photo',
+  EVENT_PHOTO: 'Event photo',
+  OTHER: 'Attachment',
+};
+
+const fileSize = (bytes) => {
+  if (!bytes) return '';
+  const kb = bytes / 1024;
+  return kb < 1024 ? `${Math.round(kb)} KB` : `${(kb / 1024).toFixed(1)} MB`;
+};
+
+/// The files are in a private bucket, so there is no URL to render up front.
+/// Opening one asks the server for a signed URL good for five minutes.
+function Attachments({ files }) {
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState('');
+
+  const open = async (file) => {
+    setBusyId(file.id);
+    setError('');
+    try {
+      const res = await api('FILE_URL', { fileId: file.id });
+      window.open(res.url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className={styles.attachments}>
+      <span className={styles.muted}>Evidence:</span>
+      {files.map((f) => (
+        <button
+          key={f.id}
+          type="button"
+          className={styles.fileChip}
+          onClick={() => open(f)}
+          disabled={busyId === f.id}
+        >
+          {busyId === f.id ? 'Opening…' : `${FILE_KIND[f.kind] || 'Attachment'}`}
+          {f.sizeBytes ? ` · ${fileSize(f.sizeBytes)}` : ''}
+        </button>
+      ))}
+      {error && <span className={styles.fileError}>{error}</span>}
+    </div>
   );
 }
 

@@ -9,7 +9,7 @@ import { Pool } from 'pg';
 const globalForPg = globalThis;
 
 function connectionString() {
-  const raw = (process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || '')
+  const raw = (process.env.SUPABASE_DB_URL || '')
     .trim()
     .replace(/^["']|["']$/g, '')
     .replace(/﻿/g, '');

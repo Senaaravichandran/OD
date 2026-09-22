@@ -12,7 +12,9 @@ const clean = (v) =>
   (v == null ? '' : String(v)).trim().replace(/^["']|["']$/g, '').replace(/﻿/g, '');
 
 function config() {
-  const url = clean(process.env.SUPABASE_URL) || clean(process.env.NEXT_PUBLIC_SUPABASE_URL);
+  // No fallback on purpose: a half-configured deployment should fail here
+  // rather than quietly reach for some other project's storage.
+  const url = clean(process.env.SUPABASE_URL);
   const key = clean(process.env.SUPABASE_SERVICE_ROLE_KEY);
   if (!url) throw new Error('SUPABASE_URL is not configured.');
   if (!key) throw new Error('SUPABASE_SERVICE_ROLE_KEY is not configured.');

@@ -901,3 +901,39 @@ textarea.input {
     max-width: 160px;
   }
 }
+
+/* Certificates and prize photos on a request card. Each chip asks the server
+   for its own signed URL when clicked, so there is no href to render. */
+.attachments {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+}
+
+.fileChip {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--brand);
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fileChip:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.fileChip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.fileError {
+  color: var(--bad);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
