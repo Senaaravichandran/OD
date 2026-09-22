@@ -1129,9 +1129,9 @@ function RequestCard({ r, showStudent, showAdvisor, showStepper, children }) {
 
 const FILE_KIND = {
   CERTIFICATE: 'Certificate',
-  PRIZE_PHOTO: 'Prize photo',
+  WINNING_PHOTO: 'Winning photo',
   EVENT_PHOTO: 'Event photo',
-  OTHER: 'Attachment',
+  SUPPORTING_DOCUMENT: 'Supporting document',
 };
 
 const fileSize = (bytes) => {

@@ -233,8 +233,20 @@ export async function advisorClassIds(staffId) {
 }
 
 /// Confirms the caller may act on this request, and returns it.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/// Postgres rejects a malformed uuid with an error of its own, which would
+/// surface as a 500. A caller that sent nothing deserves a 400.
+export function uuidOf(v, message = 'A required id was missing.') {
+  const id = clean(v);
+  if (!UUID.test(id)) throw new HttpError(400, message);
+  return id;
+}
+
 export async function requestForActor(auth, requestId) {
-  const req = await one('select * from od_requests where id = $1', [clean(requestId)]);
+  const id = uuidOf(requestId, 'No OD request was specified.');
+
+  const req = await one('select * from od_requests where id = $1', [id]);
   if (!req) throw new HttpError(404, 'Request not found.');
 
   if (auth.role === 'HOD') return req;

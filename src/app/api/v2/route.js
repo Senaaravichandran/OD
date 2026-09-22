@@ -9,8 +9,7 @@
 
 import { NextResponse } from 'next/server';
 import {
-  HttpError, clean, dateOf, identify, passwordIdentify, publicUser,
-  requestForActor, requireRole, sectionOf, signStaffToken, text, yearOf,
+  HttpError, clean, dateOf, identify, passwordIdentify, publicUser, requestForActor, requireRole, sectionOf, signStaffToken, text, uuidOf, yearOf,
 } from '@/lib/api-core';
 import { audit, one, query, transaction } from '@/lib/db';
 import { sendPush } from '@/lib/firebase-admin';
@@ -649,7 +648,7 @@ async function fileUrl(auth, p) {
   }
   const file = await one(
     'select id, od_request_id, object_key, file_name, mime_type from result_files where id = $1',
-    [clean(p.fileId)]
+    [uuidOf(p.fileId, 'No file was specified.')]
   );
   if (!file) throw new HttpError(404, 'File not found.');
 
@@ -669,7 +668,7 @@ async function deleteFile(auth, p) {
   requireRole(auth, 'STUDENT');
   const file = await one(
     'select id, od_request_id, object_key from result_files where id = $1',
-    [clean(p.fileId)]
+    [uuidOf(p.fileId, 'No file was specified.')]
   );
   if (!file) throw new HttpError(404, 'File not found.');
   await requestForActor(auth, file.od_request_id);
