@@ -1,19 +1,41 @@
 ================================================================================
-SMVEC OD MANAGEMENT - FLUTTER APP
+SMVEC-IT OD - FLUTTER APP
 How it works, and everything it is built from
 ================================================================================
 
-This document covers ONLY the Flutter Android/iOS app (the `mobile/` folder).
-The Next.js web portal and the API are a separate codebase; they are mentioned
-here only where the app talks to them.
+This document covers ONLY the Flutter Android app (the `mobile/` folder). The
+Next.js web portal and the API are a separate codebase; they appear here only
+where the app talks to them.
 
 App id ........... edu.smvec.it.smvec_od
-App name ......... SMVEC OD
-Version .......... 2.4.0+7  (versionName 2.4.0, versionCode 7)
-Package name ..... smvec_od
+App name ......... SMVEC-IT OD
+Version .......... 3.1.0+10  (versionName 3.1.0, versionCode 10)
+Dart package ..... smvec_od
 Purpose .......... Students raise On-Duty (OD) requests for events. Their class
-                   advisor recommends, the HOD sanctions, and the student is
-                   notified at each step.
+                   advisor recommends, the HOD sanctions, the student is pushed
+                   a notification at each step, and once an OD is sanctioned the
+                   student attaches the certificate or prize photo as evidence.
+
+Written for: whoever maintains or rebuilds this app.
+
+
+================================================================================
+0. WHAT CHANGED IN 3.x
+================================================================================
+
+Versions up to 2.4.0 signed in with Clerk and talked to /api/mobile. None of
+that remains. 3.x is a different application underneath:
+
+  Identity ......... Clerk            ->  Firebase Authentication
+  API .............. /api/mobile      ->  /api/v2
+  Database ......... Neon Postgres    ->  Supabase Postgres
+  Files ............ none             ->  Supabase Storage (private bucket)
+  Push ............. local only       ->  Firebase Cloud Messaging + local
+  Reports .......... none             ->  PDF / Excel / Word export
+  Staff sign-in .... shared ENV code  ->  one password per staff member
+
+If you install an APK and see Clerk, or a role picker without the three
+buttons below, it is a pre-3.0 build. Uninstall it.
 
 
 ================================================================================
@@ -28,670 +50,625 @@ Language ............... Dart (null-safe)
 UI framework ........... Flutter Material 3 (useMaterial3: true)
 Linting ................ flutter_lints ^5.0.0 (analysis_options.yaml)
 Build system (Android).. Gradle with Kotlin DSL (build.gradle.kts)
-Total Dart code ........ 18 files, ~4,460 lines under lib/
-Total packages ......... 126 resolved packages (9 direct, rest transitive)
+Google services ........ com.google.gms.google-services 4.4.2
+Java / Kotlin .......... Java 11 target, core library desugaring ON
+Total Dart code ........ 42 files, ~9,100 lines under lib/
+Total packages ......... 125 resolved packages (20 direct, rest transitive)
+State management ....... none. A ChangeNotifier singleton (ODService) plus
+                         setState. No Provider, Riverpod, BLoC or GetX.
 
 1.2 DIRECT DEPENDENCIES  (pubspec.yaml)
 ---------------------------------------
-flutter (sdk)               The framework itself.
-cupertino_icons ^1.0.8      iOS-style icon set.
-intl ^0.20.2                Date formatting (DateFormat('EEEE') for event day).
-                            Pinned to 0.20.2 because flutter_localizations,
-                            which clerk_flutter pulls in, pins that exact
-                            version. ^0.20.3 makes dependency resolution fail.
-http ^1.2.2                 The only networking library. Plain POST + JSON.
-shared_preferences ^2.3.2   On-device key/value storage for the session and the
-                            list of notifications already shown.
-clerk_auth ^0.0.18-beta     Clerk's Dart core: session, user, token models.
-clerk_flutter ^0.0.18-beta  Clerk's Flutter widgets and auth state.
-                            NOTE: community-maintained beta, not an officially
-                            supported Clerk SDK. Breaking changes are expected
-                            before 1.0.0.
-flutter_local_notifications Device notifications for OD approvals/rejections.
-  ^18.0.1                   Requires Android core library desugaring (it uses
-                            java.time).
-app_links ^6.3.2            Receives the browser's deep-link callback after
-                            Google sign-in.
+flutter (sdk)                 The framework itself.
+cupertino_icons ^1.0.8        iOS-style icon set.
+intl ^0.20.2                  Date formatting, and DateFormat('EEEE') to derive
+                              the event's day name from its date.
+http ^1.2.2                   The only networking library. Plain POST + JSON.
+shared_preferences ^2.3.2     On-device key/value store: the staff session and
+                              the ids of notifications already shown.
+
+  -- identity and push --
+firebase_core ^3.8.1          Firebase initialisation. Reads google-services.json.
+firebase_auth ^5.3.4          The session, the user, and the ID token.
+google_sign_in ^6.2.2         The native Google account picker.
+firebase_messaging ^15.1.6    FCM: device token, foreground and background
+                              message handlers.
+flutter_local_notifications   Shows a notification when the app is in the
+  ^18.0.1                     foreground, where Android suppresses the system
+                              one. Needs core library desugaring (java.time).
+
+  -- files --
+image_picker ^1.1.2           Camera and gallery.
+flutter_image_compress ^2.3.0 Resizes and re-encodes before upload.
+file_picker ^8.1.7            Picking a PDF for a supporting document.
+
+  -- report exports --
+pdf ^3.11.1                   Builds the PDF report.
+excel ^4.0.6                  Builds the .xlsx report.
+archive ^3.6.1                Zips a hand-built OOXML package into .docx.
+path_provider ^2.1.5          Finds the directory to write exports into.
+open_filex ^4.6.0             Opens an exported file in the device's viewer.
+share_plus ^10.1.3            Shares an export to WhatsApp, mail, Drive.
+url_launcher ^6.3.1           Opens a signed file URL in the browser as a
+                              fallback, and mails the department.
 
 1.3 DEV DEPENDENCIES
 --------------------
-flutter_test (sdk)          Test runner.
-flutter_lints ^5.0.0        Lint rules.
-flutter_launcher_icons      Generates the launcher icon for every density and
-  ^0.14.4                   the Android adaptive icon. Run with:
-                              dart run flutter_launcher_icons
+flutter_test (sdk)            Test runner.
+flutter_lints ^5.0.0          Lint rules.
+flutter_launcher_icons        Generates the launcher icon for every density
+  ^0.14.4                     from assets/icon/app_icon.png.
 
-1.4 NOTABLE TRANSITIVE PACKAGES (pulled in by clerk_flutter)
-------------------------------------------------------------
-webview_flutter       In-app browser surface used by the Clerk SDK.
-passkeys              Passkey/WebAuthn support in the Clerk SDK.
-image_picker          Profile image support in the Clerk SDK.
-url_launcher          Opens the external browser for OAuth.
-path_provider         File paths used for Clerk's token cache.
-flutter_svg           Renders Clerk's SVG assets.
-phone_input           Phone-number field in Clerk's widgets.
-email_validator       Email validation in Clerk's widgets.
-flutter_localizations Localization delegates required by the Clerk SDK.
-collection, win32, xml, vector_graphics, and ~110 more.
-
-These are why the release APK is ~54 MB.
-
-1.5 ANDROID BUILD CONFIG  (android/app/build.gradle.kts)
---------------------------------------------------------
-namespace / applicationId .. edu.smvec.it.smvec_od
-compileSdk ................. 36 (from the Flutter toolchain)
-minSdk ..................... 24  (Android 7.0 Nougat and above)
-targetSdk .................. from the Flutter toolchain
-Java / Kotlin target ....... Java 11
-Core library desugaring .... ENABLED. Required by
-                             flutter_local_notifications, which uses java.time.
-                             Without it the release build fails at
-                             :app:checkReleaseAarMetadata.
-                             Dependency: com.android.tools:desugar_jdk_libs:2.1.4
-Signing .................... RELEASE IS SIGNED WITH THE DEBUG KEY.
-                             This is Flutter's default template and has not been
-                             changed. It is fine for sideloading, but a proper
-                             upload keystore is needed before Play Store
-                             distribution.
-
-1.6 ANDROID PERMISSIONS  (AndroidManifest.xml)
-----------------------------------------------
-android.permission.INTERNET            Calls the API.
-android.permission.POST_NOTIFICATIONS  Required from Android 13 (API 33) to
-                                       show OD approval notifications.
-
-1.7 ANDROID INTENT FILTERS
---------------------------
-MAIN / LAUNCHER            Normal app launch.
-VIEW + BROWSABLE           scheme="smvecod" host="auth"
-                           Brings the user back into the app after Google
-                           sign-in completes in the browser.
-
-1.8 ASSETS
-----------
-assets/college_logo.png    Shown in the app bars and on the sign-in screens.
-assets/app_icon.png        Source image for the launcher icon (1254x1254 RGBA,
-                           the Department of Information Technology logo).
-
-Launcher icon is generated into:
-  android/app/src/main/res/mipmap-*/ic_launcher.png        (legacy icon)
-  android/app/src/main/res/drawable-*/ic_launcher_foreground.png
-  android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml (adaptive icon)
-  android/app/src/main/res/values/colors.xml (ic_launcher_background = #FFFFFF)
-  ios/Runner/Assets.xcassets/AppIcon.appiconset/*           (full iOS set)
-
-The source logo has a transparent background, so the adaptive icon is drawn on
-a white plate. Without that, Android would show the system default behind it.
+1.4 WHAT IS DELIBERATELY NOT USED
+---------------------------------
+No state-management package .. the app has one source of truth (ODService) and
+                               screens listen to it. Adding a container would
+                               be more machinery than the app has state.
+No ORM, no local database .... the device holds no copy of the OD data. Every
+                               screen renders what the last SYNC returned.
+No code generation ........... models are hand-written fromJson/toJson. There
+                               is no build_runner step to forget.
+No Supabase client SDK ....... the app never talks to Postgres or Storage
+                               directly. It has no database credentials at all.
+No secrets in the app ........ see section 11.
 
 
 ================================================================================
-2. PROJECT STRUCTURE
+2. HOW THE APP IS PUT TOGETHER
 ================================================================================
 
 lib/
-  main.dart                       262   App entry, Clerk setup, the whole
-                                        sign-in journey, role -> dashboard
-  config/
-    app_config.dart                24   Build-time constants
+  main.dart                        startup, AppGate routing
+  theme.dart                       one Material 3 theme, all colours
+  config/app_config.dart           API base URL, domain, event types, limits
   models/
-    user.dart                     113   AppUser, UserRole
-    od_request.dart               162   ODRequest, ClassSection, ClassYear,
-                                        AdvisorInfo
-  services/
-    api_client.dart                54   Low-level HTTP/JSON client
-    clerk_session.dart            132   Clerk -> app session exchange, register
-    session_service.dart           33   Persist the session on the device
-    od_service.dart               248   App state: requests, notifications,
-                                        audit log (ChangeNotifier singleton)
-    notification_service.dart     113   Device notifications
+    user.dart                      AppUser, roles, staff classes
+    od_request.dart                ODRequest, ODFile, notifications, audit
+  services/                        everything that is not a widget
+    auth_service.dart              Firebase + Google sign-in
+    api_client.dart                the single POST, token refresh, retry
+    od_service.dart                the app's state, and every API action
+    session_service.dart           remembers a staff password session
+    notification_service.dart      local notifications, de-duplicated
+    push_service.dart              FCM permission, handlers, token registration
+    upload_service.dart            pick, compress, upload
+    report_export.dart             PDF, Excel, Word
+  utils/validators.dart            form validators
+  widgets/common.dart              StatusBadge, StatCard, EmptyState,
+                                   SkeletonList, ErrorBanner, DetailRow,
+                                   SectionHeader, confirm(), showToast(),
+                                   fmtDate/fmtDateTime/fmtRelative
   screens/
-    role_picker_screen.dart       146   First screen: Student / Advisor / HOD
-    auth_screen.dart              293   Per-role sign-in options
-    login_screen.dart             107   Clerk token -> app session bridge
-    registration_screen.dart      337   First-run profile (students)
-    student_dashboard.dart       1188   Student home, new OD, results
-    advisor_dashboard.dart        631   Advisor home, review and decide
-    hod_dashboard.dart            509   HOD home, sanction, audit trail
-    notifications_sheet.dart       83   Notification list bottom sheet
-  utils/
-    validators.dart                26   Email/batch validation, year labels
+    role_picker_screen.dart        student / staff / HOD
+    auth_screen.dart               Google, or email+password for staff
+    registration_screen.dart       first-time student profile
+    notifications_sheet.dart       the bell
+    student/                       student_shell + 3 tabs, new OD, result,
+                                   od_card, od_progress, attachments_sheet
+    advisor/                       advisor_shell + 5 tabs, review_sheet
+    hod/                           hod_shell + 6 tabs, audit log
+    shared/                        request_tile, students_tab,
+                                   student_detail_screen, staff_profile_tab,
+                                   file_viewer
+    reports/reports_tab.dart       search, filters, export
 
-test/
-  widget_test.dart                     Unit tests for validators (4 tests)
-
-
-================================================================================
-3. CONFIGURATION (lib/config/app_config.dart)
-================================================================================
-
-All of these are compile-time constants and can be overridden at build time
-with --dart-define.
-
-apiBaseUrl
-  Default: https://od-landing.vercel.app/api/mobile
-  Override: flutter build apk --dart-define=API_BASE_URL=...
-
-clerkPublishableKey
-  Default: pk_test_cmVuZXdpbmctcm91Z2h5LTY2MDMuY2xlcmsuYWNjb3VudHMuZGV2JA
-  Override: flutter build apk --dart-define=CLERK_PUBLISHABLE_KEY=pk_live_...
-  This is a PUBLIC key (it also ships in the web bundle), but it differs
-  between the Clerk development and production instances.
-
-allowedDomain ..... @smvec.ac.in
-hodEmail .......... hodit@smvec.ac.in
-years ............. [1, 2, 3, 4]
-sections .......... [A, B, C, D, E, F]   (fallback only; the real per-year
-                    section list comes from the server)
+There is no router package. main.dart's AppGate decides what to show, and
+everything after that is a Navigator push or a bottom sheet.
 
 
 ================================================================================
-4. HOW THE APP WORKS - THE FULL JOURNEY
+3. STARTUP
 ================================================================================
 
-4.1 STARTUP  (main.dart)
-------------------------
-1. WidgetsFlutterBinding.ensureInitialized()
-2. NotificationService.init()
-     - creates the Android notification channel
-     - asks for notification permission (Android 13+)
-     - loads the "already shown" notification id list from SharedPreferences
-3. runApp(SMVECODApp)
+main() does three things, in this order:
 
-SMVECODApp builds:
+  1. WidgetsFlutterBinding.ensureInitialized()
+  2. Firebase.initializeApp(), inside a try/catch
+  3. NotificationService.init(), inside a try/catch
 
-  ClerkAuth(config: ClerkAuthConfig(...))
-    -> MaterialApp
-         -> _AppGate
+Step 2 is wrapped because it is the one thing that can make the app unusable.
+If google-services.json is missing from the build, initializeApp throws before
+a single pixel is drawn - which on a phone looks like a black screen and tells
+nobody anything. Instead the app runs _StartupFailureApp, which says on screen
+that sign-in services could not start, shows the error, and tells the person to
+reinstall the latest APK. (This actually happened in 3.0.0: the
+com.google.gms.google-services Gradle plugin was missing, so google-services.json
+was never compiled into the APK. The plugin is now in
+android/app/build.gradle.kts and android/settings.gradle.kts.)
 
-ClerkAuthConfig is given three things:
-  publishableKey      identifies the Clerk instance
-  redirectionGenerator returns smvecod://auth/callback for OAuth and email-link
-                       strategies. Returning a URI here is what makes the Clerk
-                       SDK open the DEVICE BROWSER instead of an in-app WebView.
-                       This matters: Google refuses OAuth from embedded WebViews
-                       ("this browser or app may not be secure"), so the WebView
-                       route succeeds on some phones and silently stalls on
-                       others.
-  deepLinkStream       AppLinks().uriLinkStream filtered to scheme 'smvecod',
-                       which feeds the browser's callback back into the SDK so
-                       the session is picked up when the user returns.
+Step 3 is optional. A device that refuses notification permission still works.
 
-MaterialApp also registers ClerkSdkLocalizations.localizationsDelegates and
-supportedLocales, which the Clerk widgets require.
 
-Theme: Material 3, seed colour #3350B0 (primary blue), secondary #D4A429
-(gold), scaffold background #F6F8FD, Roboto.
+================================================================================
+4. WHO GETS IN, AND HOW
+================================================================================
 
-4.2 THE GATE  (_AppGate in main.dart)
--------------------------------------
-_AppGate holds the whole navigation decision in one place. It keeps:
+4.1 THE ROLE PICKER  (role_picker_screen.dart)
+----------------------------------------------
+The first screen offers exactly three choices:
 
-  _currentUser      the app session (AppUser) or null
-  _pickedRole       which role button was tapped
-  _pendingProfile   (email, regToken, role) when a profile must be filled in
-  _restoring        true while the saved session is being read from disk
+    Student            Class Advisor            HOD
 
-On init it restores any saved session from SharedPreferences and hands it to
-ODService.
+Tapping one only decides which sign-in options the next screen offers. It
+grants nothing. What a person is actually allowed to do comes from the profile
+the server returns after they authenticate.
 
-It then renders:
+4.2 STUDENTS - GOOGLE ONLY  (auth_service.dart)
+-----------------------------------------------
+A student sees one button: Continue with Google. There is no password field,
+because an OD is filed against a real, verified college address.
 
-  ClerkErrorListener
-    -> ClerkAuthBuilder(signedInBuilder / signedOutBuilder)
-         -> _buildFlow(...)
+  - GoogleSignIn is constructed with hostedDomain: 'smvec.ac.in', which makes
+    Google's own picker prefer college accounts.
+  - _google.signOut() runs first, every time, so the account chooser actually
+    appears instead of silently reusing the last account.
+  - If the chosen address does not end in @smvec.ac.in the app signs straight
+    back out and says which address was picked.
+  - The Google credential is exchanged for a Firebase session.
+  - FirebaseAuthException codes are translated into sentences a student can act
+    on ("No internet connection", "This account has been disabled", ...).
 
-_buildFlow decides, in this order:
+The domain check in the app is a courtesy. The server checks the verified
+address on every single call, so a modified app gains nothing.
 
-  1. _currentUser != null            -> the matching dashboard
-  2. _pendingProfile != null         -> RegistrationScreen
-  3. Clerk says signed in            -> LoginScreen (exchanges the token)
-  4. no role picked yet              -> RolePickerScreen
-  5. otherwise                       -> AuthScreen for the picked role
+Google refuses OAuth inside an embedded WebView, which is why this uses the
+native google_sign_in flow. The manifest still carries a smvecod://auth deep
+link from the browser-based flow used earlier.
 
-IMPORTANT: the role you tap only decides which sign-in options you are shown.
-What you are actually allowed to do comes from the profile the server returns.
-The app never decides its own permissions.
-
-4.3 ROLE PICKER  (role_picker_screen.dart)
+4.3 STAFF AND THE HOD - GOOGLE OR PASSWORD
 ------------------------------------------
-The first screen. Three cards:
+A class advisor or the HOD can either use Google with their college address, or
+sign in with a password. The password route posts PASSWORD_LOGIN to the server,
+which returns a signed staff session token (12-hour life) plus the profile.
 
-  Student         "Raise OD requests and track approvals"
-  Class Advisor   "Review your class's OD requests"
-  HOD             "Give final sanction on recommended ODs"
+Passwords are never in the app. There is no list of staff, no password format
+written down in Dart, no shared department code. The app posts what was typed
+and the server compares it against a bcrypt digest.
 
-Tapping one sets _pickedRole and moves to AuthScreen.
+Only the thirteen rostered class-advisor addresses and the HOD address exist as
+staff. Nobody can register themselves as a class advisor, from the app or
+otherwise - there is no action for it.
 
-4.4 SIGN-IN  (auth_screen.dart)
+4.4 FIRST-TIME STUDENT PROFILE  (registration_screen.dart)
+----------------------------------------------------------
+A student whose SESSION comes back with needsRegistration is asked for:
+
+    Full name          (pre-filled from the Google account)
+    Register number
+    Year               (only years the department runs)
+    Section            (only sections that year runs)
+
+The class advisor is NOT asked for. The screen shows who the advisor will be
+once year and section are chosen, and the server derives the advisor from the
+class. A student cannot pick their reviewer.
+
+The year and section lists come from the public CLASSES action, so they are
+whatever the department roster says today.
+
+4.5 WRONG CLASS
+---------------
+A student who registered under the wrong class can correct it from their
+profile tab, which calls CHANGE_CLASS. ODs already filed stay with the advisor
+who received them.
+
+
+================================================================================
+5. TALKING TO THE SERVER  (api_client.dart)
+================================================================================
+
+One endpoint, one shape:
+
+    POST https://od-landing.vercel.app/api/v2
+    Authorization: Bearer <token>
+    {"action": "...", "payload": {...}}
+
+  - The base URL is overridable at build time:
+        flutter build apk --dart-define=API_BASE_URL=https://.../api/v2
+  - The token is a Firebase ID token for students, or the signed staff session
+    token after a password sign-in.
+  - Every call has a 30-second timeout. A timeout and a connection failure get
+    different, plain-language messages.
+  - A 401 on a student call is retried exactly once with a force-refreshed ID
+    token. A session that quietly aged out should not look like a failure.
+  - Anything that is not 2xx with success:true becomes an ApiException carrying
+    the server's own message, so what the user reads is what the server meant.
+  - callPublic() skips the token, for the class list before anyone is signed in.
+
+ACTIONS THE APP USES
+
+  CLASSES          public   the department's year/section grid and advisors
+  PASSWORD_LOGIN   public   staff password -> staff session token
+  SESSION                   who am I, or needsRegistration
+  REGISTER                  first-time student profile
+  CHANGE_CLASS              student corrects their class
+  SYNC                      requests + notifications (+ audit log for the HOD)
+  CREATE_OD                 file a request
+  ADVISOR_DECIDE            recommend or reject
+  HOD_DECIDE                sanction or reject
+  SUBMIT_RESULT             participated / won, prize, project
+  UPLOAD_FILE               attach a certificate or photo
+  FILE_URL                  a short-lived signed URL for one file
+  DELETE_FILE               remove an attachment
+  REGISTER_DEVICE           this device's FCM token
+  MARK_READ                 clear the notification badge
+
+The app never sends a role, an advisor, a student id or a status it made up.
+Scoping is the server's job: SYNC returns only what the caller may see.
+
+
+================================================================================
+6. THE APP'S STATE  (od_service.dart)
+================================================================================
+
+ODService is a singleton ChangeNotifier. It holds:
+
+    user, requests, auditLogs, notifications, classes,
+    isLoading, lastError
+
+and exposes derived views the screens read directly:
+
+    activeRequests, closedRequests, awaitingMyReview, awaitingHod,
+    students (rolled up per register number), requestsFor(registerNumber),
+    unreadCount
+
+refresh() calls SYNC and replaces everything. Screens rebuild through
+AnimatedBuilder / addListener on the singleton. Every mutating action
+(createOd, advisorDecide, hodDecide, submitResult, ...) folds the request the
+server returned back into the list, so the UI updates without a second round
+trip.
+
+There is no polling. The app syncs on open, on pull-to-refresh, when a push
+arrives, and when a push is tapped.
+
+_firstSync distinguishes the initial skeleton load from later refreshes, so a
+background refresh does not blank the screen.
+
+
+================================================================================
+7. THE OD WORKFLOW, AS THE APP SEES IT
+================================================================================
+
+    Student files            ->  PENDING_ADVISOR
+    Advisor recommends       ->  APPROVED_BY_ADVISOR
+    Advisor rejects          ->  REJECTED_ADVISOR      (closed)
+    HOD sanctions            ->  APPROVED              (closed)
+    HOD rejects              ->  REJECTED_HOD          (closed)
+
+The HOD cannot act while a request is still PENDING_ADVISOR. The review sheet
+knows this and shows "Waiting for <advisor> to review" with the buttons
+withheld, so the person is told why rather than being allowed to tap and fail.
+The server refuses it too, and so does a Postgres trigger. Three layers,
+because skipping the class advisor is the one thing the department cannot have.
+
+7.1 FILING  (new_od_sheet.dart)
 -------------------------------
-What is offered depends on the role:
+    Event type      one of seven (Hackathon, Internship, Paper Presentation,
+                    Workshop, Symposium, Sports, Other)
+    Event name
+    Event date      a date picker; the day name is derived, not typed
+    Description
+    Solo or Team    team adds a member list, pre-filled with the student
 
-  STUDENT   "Continue with Google" ONLY.
-            There is deliberately no password door for students, because an OD
-            is filed against a real, verified college address.
+7.2 REVIEWING  (review_sheet.dart)
+----------------------------------
+One sheet serves both the advisor and the HOD; isHod changes the wording and
+which action is called. It shows the student, the event, the description, the
+result if there is one, the attachments, the advisor's remarks, and then either
+the decision controls, the "waiting for the advisor" notice, or "this request
+is closed".
 
-  ADVISOR   "Continue with Google", OR a password form.
-            The password form does NOT ask for an email. It shows a dropdown of
-            the department's class advisors loaded from the server
-            (name + year + section), so the address sent is always one the
-            server will accept.
+Remarks are optional. Left blank, the server writes a sensible default
+("Recommended by Class Advisor.").
 
-  HOD       "Continue with Google", OR a password form with the HOD address
-            pre-filled and read-only.
+Approving and rejecting both ask for confirmation first, and the confirmation
+says what the student will be told.
 
-Google path:
-  ClerkAuth.of(context, listen: false).ssoSignIn(context, Strategy.oauthGoogle)
-  Because redirectionGenerator is set, this opens the device browser. After
-  Google completes, the browser redirects to smvecod://auth/callback, Android
-  routes that back into the app, app_links delivers it, and the Clerk SDK
-  finishes the session. ClerkAuthBuilder then rebuilds as signed-in.
+7.3 RESULTS  (result_sheet.dart)
+--------------------------------
+Once an OD is sanctioned the student records the outcome: participated, or won
+with a prize. A win must name the prize - the server and a database constraint
+both insist.
 
-Password path:
-  POST PASSWORD_LOGIN with {role, email, password}.
-  Returns either an app session, or needsRegistration + a regToken.
 
-4.5 TOKEN EXCHANGE  (login_screen.dart + clerk_session.dart)
-------------------------------------------------------------
-Once Clerk reports a signed-in user, LoginScreen runs ClerkSession.exchange():
+================================================================================
+8. CERTIFICATES AND PRIZE PHOTOS
+================================================================================
 
-  1. authState.sessionToken()  -> SessionToken -> .jwt   (the Clerk JWT)
-  2. POST CLERK_LOGIN with  Authorization: Bearer <clerk jwt>
-  3. The server verifies the JWT, reads the VERIFIED primary email from Clerk,
-     enforces the @smvec.ac.in rule, and replies with either:
-        - an app session  { user, token }
-        - needsRegistration + email + regToken
+8.1 WHAT CAN BE ATTACHED  (attachments_sheet.dart)
+--------------------------------------------------
+    CERTIFICATE           always offered
+    WINNING_PHOTO         offered only once the result says the student won
+    EVENT_PHOTO           always offered
+    SUPPORTING_DOCUMENT   always offered
 
-The app then uses the APP token for every later call. The Clerk JWT is only
-ever used for this one exchange. That keeps every other request at zero
-external calls.
+Sources: camera, gallery, or a PDF from the file picker. Files can be attached
+only after the OD is sanctioned - it is evidence of an approved OD, and the
+server and a trigger both enforce that.
 
-The screen shows "Signing you in..." while this runs, and on failure shows the
-server's message with "Try again" and "Sign out and use another account".
+8.2 COMPRESSION, ON THE DEVICE  (upload_service.dart)
+-----------------------------------------------------
+A phone camera JPEG is 8-12 MB. The department's connection is not, and the
+upload limit is 10 MB, so compression happens before anything leaves the
+handset:
 
-4.6 FIRST-RUN PROFILE  (registration_screen.dart)
+  1. flutter_image_compress: fit inside 1600px, quality 80, JPEG,
+     autoCorrectionAngle on so a portrait photo is not uploaded sideways.
+  2. If the result is still over the limit, a harder second pass at
+     1200px / quality 60.
+  3. If the compressor cannot read the file at all, the original is sent
+     rather than the upload being lost. Compression is a convenience, not a
+     gate.
+
+A typical photo lands at a few hundred kilobytes. PDFs are sent as they are.
+
+8.3 UPLOAD, AND READING BACK
+----------------------------
+The bytes go to UPLOAD_FILE base64-encoded, with the kind, file name and MIME
+type. The server compresses nothing further; it checks the type against an
+allowlist (JPEG, PNG, WebP, PDF), checks the size, and writes the object to a
+PRIVATE Supabase Storage bucket under
+
+    od/<requestId>/<kind>/<uuid>.<ext>
+
+Nothing in the bucket has a public URL. Opening an attachment calls FILE_URL,
+which returns a signed URL valid for five minutes, for that one object. The
+link does not outlive the screen it was shown on.
+
+8.4 VIEWING  (shared/file_viewer.dart)
+--------------------------------------
+Images render in-app with pinch zoom. PDFs open in the device's own viewer.
+Advisors and the HOD see the same attachments from the review sheet, which is
+the point: they are deciding on evidence.
+
+A student can remove their own attachment (DELETE_FILE), which deletes the
+stored object as well as the row.
+
+
+================================================================================
+9. NOTIFICATIONS
+================================================================================
+
+9.1 PUSH  (push_service.dart)
+-----------------------------
+The server sends an FCM message whenever an OD changes hands. The app:
+
+  - asks for permission (Android 13+ needs POST_NOTIFICATIONS),
+  - registers a background handler, which is what lets a data message wake the
+    app at all,
+  - on a foreground message, shows it through flutter_local_notifications,
+    because Android suppresses the system notification while the app is open,
+    and refreshes the OD list behind it,
+  - on a tap from the shade, refreshes so the data behind the notification is
+    current,
+  - posts the device token to REGISTER_DEVICE, and again whenever FCM rotates
+    it,
+  - deletes the token on sign-out, so the next person to sign in on the same
+    phone does not receive the previous user's notifications.
+
+All of it is inside a try/catch. A device without Play Services, or one that
+refuses permission, must still be able to use the app.
+
+9.2 LOCAL  (notification_service.dart)
+--------------------------------------
+Channel: smvec_od_updates. The set of notification ids already shown is kept
+in SharedPreferences, so the same approval is not announced twice after a
+refresh. reset() clears it on sign-out.
+
+9.3 IN-APP  (notifications_sheet.dart)
+--------------------------------------
+The bell in every shell shows unreadCount. Opening the sheet lists what SYNC
+returned and calls MARK_READ.
+
+
+================================================================================
+10. THE THREE APPS INSIDE THE APP
+================================================================================
+
+10.1 STUDENT  (student_shell.dart - 3 tabs)
+-------------------------------------------
+    OD Requests   active requests, each with a progress stepper showing where
+                  it is in the chain; + New OD
+    Previous      closed requests, with results and attachments
+    Profile       name, register number, class, advisor, wrong-class fix,
+                  sign out
+
+10.2 CLASS ADVISOR  (advisor_shell.dart - 5 tabs)
 -------------------------------------------------
-Only students reach this screen. Rostered advisors are created automatically by
-the server from the department roster the moment they sign in, and nobody who
-is not on that roster is allowed to become an advisor at all.
+    Dashboard     counts awaiting review, forwarded, approved, rejected
+    Requests      their class only, filterable, tap to review
+    Students      their class's students, rolled up, tap for the history
+    Reports       search, filter, export
+    Profile       name, the classes assigned to them, sign out
 
-The form asks for:
+An advisor's classes are shown, not edited. They come from the department
+roster.
 
-  Full name
-  Register number
-  Year        -> dropdown, built from the server's class list
-  Section     -> dropdown, showing ONLY the sections that exist in the chosen
-                 year. (Year 2 has a Section D; years 1, 3 and 4 stop at C.)
-                 Changing the year clears the section.
+10.3 HOD  (hod_shell.dart - 6 tabs)
+-----------------------------------
+    Dashboard     department-wide counts, including prizes won
+    Requests      everything, with "awaiting sanction" first
+    Students      every student in the department
+    Reports       search, filter, export
+    Audit         who did what, when - the HOD only
+    Profile       sign out
 
-  Class advisor -> NOT a question. A read-only panel that fills in as soon as
-                   year + section are chosen, showing the advisor that class
-                   maps to. The app sends only year and section; the server
-                   resolves the advisor from the roster.
-
-Submits REGISTER with {regToken, role, name, rollNumber, year, section} and
-receives the app session.
-
-4.7 DASHBOARDS
---------------
-
-STUDENT  (student_dashboard.dart, 1188 lines)
-  - Profile banner: name, register number, year, section, department, and the
-    class advisor. Tapping the advisor line opens "Correct your class", which
-    lists every class with its advisor and calls CHANGE_CLASS. Requests already
-    filed stay with the advisor who received them.
-  - Three stat chips: Total Requests / Under Review / OD Approved.
-  - A card per OD request showing status, event details, advisor and HOD
-    remarks, and a 3-step progress stepper:
-        Submitted -> Advisor -> HOD
-    The stepper turns red at whichever step rejected it.
-  - "New OD" bottom sheet (_NewODSheet):
-        Class advisor  - read-only, from the profile
-        Submission type - SOLO or TEAM
-        Team members    - up to 5, first row pre-filled with the student
-        Event type      - Hackathon, Internship, Paper Presentation, Workshop,
-                          Symposium, Sports, Other
-        Event name
-        Event date      - date picker; the weekday is computed with
-                          DateFormat('EEEE')
-        Description
-    Submits CREATE_OD. The advisor is NOT sent - the server reads it from the
-    student's profile, so a request cannot be routed to someone else's advisor.
-  - "Submit result" sheet (_ResultSubmissionSheet), enabled once an OD is
-    APPROVED: WON or PARTICIPATION, project name, description -> SUBMIT_RESULT.
-  - Pull to refresh.
-
-ADVISOR  (advisor_dashboard.dart, 631 lines)
-  - Sees only the requests assigned to them (the server filters, not the app).
-  - Filter chips: All Requests / Pending My Review / Approved by Me /
-    Rejected by Me, each with a count.
-  - A card per request with the student's details and the full event.
-  - Approve & Forward, or Reject, each with a remarks field -> ADVISOR_DECIDE.
-  - Can update their own class details (year / section / batch) via
-    UPDATE_CLASS.
-  - Pull to refresh.
-
-HOD  (hod_dashboard.dart, 509 lines)
-  - Summary counts: total, approved, rejected.
-  - Three tabs:
-      Pending      requests already recommended by an advisor
-      Approved     sanctioned ODs
-      Audit trail  the department-wide action log (HOD only)
-  - Review Details -> Approve OD or Reject, with remarks -> HOD_DECIDE.
-  - The HOD CANNOT act on a request an advisor has not recommended. The server
-    returns 409 and the app surfaces that message.
-
-NOTIFICATIONS SHEET  (notifications_sheet.dart)
-  A bottom sheet, opened from the bell icon in every dashboard, listing the
-  in-app notifications from the last sync, newest first, with relative times.
-
-4.8 SIGN OUT
-------------
-_signOut() clears the saved session, resets the shown-notification list, clears
-ODService, resets the role picker, and signs out of Clerk if a Clerk session
-exists. The user lands back on the role picker.
-
-If the server ever answers 401, ODService fires onSessionExpired, which does
-the same clear-down and shows "Your session has expired. Please sign in again."
+The audit log is returned by SYNC only when the caller is the HOD. An advisor
+asking for it gets nothing.
 
 
 ================================================================================
-5. STATE MANAGEMENT
+11. REPORTS AND EXPORTS  (reports/reports_tab.dart, report_export.dart)
 ================================================================================
 
-No state-management package is used. There is no Provider, Riverpod, BLoC or
-GetX. The app uses only what Flutter ships with:
+Search across student name, register number, event, advisor and reference.
+Filters: status, result, year, section, event type, date range.
 
-  setState                 local screen state
-  ChangeNotifier           ODService, a singleton that holds the signed-in
-                           user's data
-  addListener/removeListener  dashboards subscribe to ODService and call
-                           setState when it notifies
-  Callbacks                _AppGate passes onLogin / onLogout / onUserUpdated
-                           down to the screens
+Export As -> PDF, Excel or Word.
 
-ODService is a singleton:
+    PDF     built with the `pdf` package: department header, the filters that
+            were applied, a table, and totals.
+    Excel   built with `excel`: one row per request, a header row, column
+            widths set so nothing is truncated.
+    Word    a hand-built OOXML package (document.xml + the relationship and
+            content-type parts) zipped with `archive` into a real .docx. There
+            is no Word library for Dart; this is why `archive` is a dependency.
 
-  static final ODService _instance = ODService._internal();
-  factory ODService() => _instance;
-
-It holds: the AppUser, the request list, the audit log, the notification list,
-the cached advisor list and class structure, a loading flag and the last error.
-
-The server is the single source of truth. Every change is sent to the API and
-the record it returns replaces the local copy (_upsert). The app never guesses
-what the new state should be.
+Exports are written to the app's documents directory via path_provider, then
+either opened with open_filex or shared with share_plus (Share.shareXFiles).
+The file name carries the date, so yesterday's export is not overwritten.
 
 
 ================================================================================
-6. NETWORKING
+12. SECURITY - WHAT THE APP DOES NOT CONTAIN
 ================================================================================
 
-6.1 ApiClient  (services/api_client.dart)
------------------------------------------
-One method. Every call is a single HTTP POST to the same URL:
+The app is not trusted for authorization. Everything below is deliberate:
 
-  POST {apiBaseUrl}
-  Content-Type: application/json
-  Authorization: Bearer <token>        (when there is one)
+  - No plaintext passwords. Not a staff password, not a format for deriving
+    one, not the HOD's. The app posts what was typed; the server compares
+    against a bcrypt digest.
+  - No database credentials. No Supabase URL, no anon key, no service role
+    key, no Postgres connection string. The app cannot reach the database.
+  - No storage credentials. Uploads go through the API, which holds the keys.
+  - No Firebase Admin private key. The app only ever holds an ID token for the
+    person using it.
+  - No role claim the app can set. A role comes from the server's profile.
+  - No way to become a class advisor or the HOD. There is no action for it.
+  - google-services.json is public configuration - the same values any user of
+    the APK can read. It is not a secret, and nothing in it authorises anything
+    on its own.
 
-  { "action": "<ACTION>", "payload": { ... } }
+What the app does hold on the device: a staff session token (signed by the
+server, 12-hour life) and the ids of notifications already shown. Both are
+cleared on sign-out. Never a password.
 
-  Timeout: 20 seconds.
-
-Responses are JSON. Anything with status >= 400, or success != true, is thrown
-as an ApiException carrying the server's own message and the status code.
-ApiException.isAuthError is true for 401.
-
-Failure messages are deliberately human:
-  timeout        -> "The server took too long to respond. Please try again."
-  socket error   -> "Could not reach the server. Check your connection."
-  bad JSON       -> "Unexpected server response (<status>)."
-
-6.2 ACTIONS THE APP CALLS
--------------------------
-CLERK_LOGIN      Trade a Clerk JWT for an app session.      (Clerk JWT)
-PASSWORD_LOGIN   Advisor/HOD password sign-in.              (no token)
-REGISTER         Complete a first-run profile.              (regToken in body)
-ADVISORS         Advisor list + class structure.            (no token - public,
-                 because it is needed before a session exists)
-SYNC             Everything this user may see.              (app token)
-CREATE_OD        Raise an OD.                               (app token)
-ADVISOR_DECIDE   Advisor approves or rejects.               (app token)
-HOD_DECIDE       HOD sanctions or rejects.                  (app token)
-SUBMIT_RESULT    Student records the outcome.               (app token)
-CHANGE_CLASS     Student corrects their class/advisor.      (app token)
-UPDATE_CLASS     Advisor updates their class details.       (app token)
-
-6.3 SYNC
---------
-One call returns everything the signed-in user is allowed to see:
-
-  requests        filtered server-side by role
-                    STUDENT - only their own
-                    STAFF   - only those assigned to them
-                    HOD     - all, newest first, capped
-  notifications   that user's notification list
-  auditLogs       HOD only; empty for everyone else
-
-There is NO background polling. Sync runs when a dashboard loads, on pull to
-refresh, and when the app is resumed. This keeps the free-tier hosting and
-Redis usage low.
+Every rule the UI appears to enforce is also enforced server-side, and the
+order of the approval chain is enforced a third time by a Postgres trigger.
 
 
 ================================================================================
-7. DATA MODELS
+13. ANDROID BUILD
 ================================================================================
 
-AppUser  (models/user.dart)
-  name, email, role, token, rollNumber?, year?, section?, batch?,
-  advisorEmail?, advisorName?, department
-  UserRole enum: student | advisor | hod
-  roleFromString maps 'STAFF' and 'ADVISOR' to UserRole.advisor
-  roleString / roleDisplay for sending and showing
-  copyWith for year / section / batch / advisor
+13.1 MANIFEST
+-------------
+    android:label = "SMVEC-IT OD"
+    INTERNET
+    POST_NOTIFICATIONS          (Android 13+)
+    deep link smvecod://auth    (from the browser-based sign-in flow)
 
-ODRequest  (models/od_request.dart)
-  id, studentName, studentEmail, rollNumber, department, year, section,
-  advisorEmail, advisorName, submissionType (SOLO|TEAM), teamMembers,
-  eventType, eventName, eventDate, eventDay, description,
-  status, advisorRemarks?, hodRemarks?,
-  resultStatus (PENDING|PARTICIPATION|WON), resultProjectName?,
-  resultDescription?, createdAt
-  Helpers: isPendingAdvisor, isPendingHod, isApproved, isRejected,
-           statusDisplay
+13.2 GRADLE  (android/app/build.gradle.kts)
+-------------------------------------------
+    id("com.android.application")
+    id("kotlin-android")
+    id("dev.flutter.flutter-gradle-plugin")
+    id("com.google.gms.google-services")        <- REQUIRED. Without it
+                                                   google-services.json is
+                                                   never compiled in and the
+                                                   app starts to a black
+                                                   screen.
+    isCoreLibraryDesugaringEnabled = true       <- REQUIRED for
+    coreLibraryDesugaring(                         flutter_local_notifications,
+      "com.android.tools:desugar_jdk_libs:2.1.4")  which uses java.time.
 
-  Status values:
-    PENDING_ADVISOR       waiting on the class advisor
-    APPROVED_BY_ADVISOR   recommended, waiting on the HOD
-    REJECTED_ADVISOR      the advisor said no
-    APPROVED              sanctioned by the HOD
-    REJECTED_HOD          the HOD said no
+android/settings.gradle.kts declares
+    id("com.google.gms.google-services") version "4.4.2" apply false
 
-ClassSection   section, advisorName, advisorEmail
-ClassYear      year, List<ClassSection>
-AdvisorInfo    email, name, year, section, batch
-AuditEntry     id, requestId, action, performedBy, role, details, timestamp
-AppNotification id, title, message, timestamp
+13.3 BUILDING A RELEASE
+-----------------------
+    cd mobile
+    flutter clean            <- DO NOT SKIP. See 13.4.
+    flutter pub get
+    flutter build apk --release
 
+Output: build/app/outputs/flutter-apk/app-release.apk  (~57 MB)
 
-================================================================================
-8. LOCAL STORAGE  (SharedPreferences)
-================================================================================
+Publishing: copy it to ../public/downloads/smvec-od.apk and deploy the web
+project. The download buttons on the landing page point at that path.
 
-smvec_user_v2            the signed-in AppUser as JSON
-smvec_token_v2           the app session token
-smvec_seen_notif_ids_v1  ids of notifications already shown on this device,
-                         capped at 300 entries
+Signing: debug keys. A proper upload keystore is needed before Play Store
+distribution.
 
-SessionService reads and writes the first two. A corrupt or missing record
-returns null rather than throwing, so a bad value can never lock the user out.
+13.4 THE STALE SNAPSHOT TRAP
+----------------------------
+`flutter build apk` can reuse a previously compiled Dart AOT snapshot while
+still incrementing versionCode. Three releases (2.1.0, 2.2.0, 2.3.0) shipped
+2.0.0's Dart this way, and the version number looked right the whole time.
 
-Clerk keeps its own session separately, through its token cache.
+Always `flutter clean` before a release build, and verify the binary rather
+than the version string:
 
+    unzip -p app-release.apk lib/arm64-v8a/libapp.so > /tmp/libapp.so
+    grep -a "some string you just added" /tmp/libapp.so
+    grep -a "some string you just deleted" /tmp/libapp.so   # must miss
 
-================================================================================
-9. NOTIFICATIONS  (services/notification_service.dart)
-================================================================================
+Note: Dart stores non-ASCII strings as UTF-16 in the snapshot, so a UTF-8 grep
+for text containing a curly apostrophe will miss even when the code is there.
+Pick an ASCII-only string to test with.
 
-Channel id ....... smvec_od_updates
-Channel name ..... "OD updates"
-Description ...... "Approvals, rejections and new OD requests."
-Importance ....... high
-Android icon ..... @mipmap/ic_launcher
-iOS .............. alert + badge + sound requested at init
-
-How it works:
-  - After every SYNC, ODService passes the notification list to
-    NotificationService.showNew().
-  - Anything whose id is not already in smvec_seen_notif_ids_v1 is shown, then
-    its id is recorded.
-  - They are shown oldest first so the newest ends up on top of the shade.
-  - The FIRST sync after signing in is silent: the ids are recorded without
-    being shown, so a new user is not buried under their entire history.
-  - Every call is wrapped in try/catch. A device that refuses notifications
-    must never break sign-in.
-  - reset() clears the seen list on sign-out, so a different account on the
-    same phone starts clean.
-
-LIMITATION - read this before relying on it:
-  These are LOCAL notifications. The app raises them itself when a sync finds
-  something new, which covers the app being open or resumed. They do NOT arrive
-  when the app is fully closed. True push to a closed app needs Firebase Cloud
-  Messaging (FCM), which needs a Firebase project and a google-services.json.
-  That is not set up.
+13.5 A NOTE ON `flutter test`
+-----------------------------
+`flutter test` fails in this checkout, and not because of the code: the
+apostrophe in the path `D:\Project's\...` breaks Flutter's generated test
+harness, which injects the path into a single-quoted Dart string. The tests
+pass from a path without an apostrophe. Use `flutter analyze` here, which is
+unaffected.
 
 
 ================================================================================
-10. AUTHENTICATION MODEL
+14. FIREBASE PROJECT
 ================================================================================
 
-Clerk is the only identity provider. The app never stores or checks a student's
-password, and it never sends email of its own - Clerk owns email verification.
+Project ............. smvec-od-management
+Android app ......... edu.smvec.it.smvec_od
+Providers ........... Google (students, staff, HOD)
+FCM ................. HTTP v1 API, called by the server with a service account
+Config in the app ... android/app/google-services.json
 
-Trust chain:
-  1. Clerk verifies who the person is (Google OAuth).
-  2. The app sends Clerk's JWT to the server, once.
-  3. The server verifies that JWT against Clerk, reads the VERIFIED primary
-     email, and enforces the @smvec.ac.in rule.
-  4. The server issues its own short session token; the app uses that from then
-     on.
-
-Rules enforced by the server (the app only displays the outcome):
-  - Students: Google only, @smvec.ac.in only.
-  - Advisors: must be one of the department's 13 rostered addresses. The shared
-    staff code alone is not enough, because it would otherwise let any college
-    address claim to be an advisor and approve ODs.
-  - Two rostered advisors are listed with gmail addresses; they are allowed
-    because being on the roster is the department vouching for them. Every
-    other non-college address is refused.
-  - HOD: recognised by the HOD email address, or the HOD password.
-
-The app holds NO secrets. The Clerk publishable key is public by design. The
-staff/HOD passwords are typed by the user and never stored.
+The server verifies ID tokens against Google's published x509 certificates
+itself and checks alg, aud, iss, exp, iat and sub, rejecting alg=none. It does
+not use the firebase-admin package - that pulls in an ESM-only dependency
+(jose, via jwks-rsa) which cannot be require()d in a Vercel function.
 
 
 ================================================================================
-11. ERROR HANDLING AND EDGE CASES
+15. WHERE THE DATA LIVES
 ================================================================================
 
-- Every server error message is shown to the user as the server wrote it, so
-  the app and the portal say the same thing.
-- 401 anywhere -> session cleared, back to the role picker, snackbar shown.
-- Network failure -> plain-language message, nothing crashes.
-- Notification failures are swallowed; they never block sign-in.
-- SharedPreferences failures are swallowed; at worst a notification shows twice.
-- Changing the year in registration clears the section, so an impossible
-  combination (for example Year 1 Section D) cannot be submitted.
-- The advisor list failing to load shows a "Try again" button rather than an
-  empty dropdown the user cannot get past.
-- A student with no advisor on their profile is told so instead of being shown
-  a form that will fail.
+Supabase Postgres, 12 tables: users, staff, class_assignments, students,
+events, od_requests, od_team_members, od_approvals, od_results, result_files,
+notifications, audit_logs. Plus the od_report_rows view behind the report
+screens.
 
+Row level security is enabled on every table with no permissive policies at
+all. The API connects as the service role and does its own authorization, so a
+leaked anon key reads nothing.
 
-================================================================================
-12. BUILDING AND RUNNING
-================================================================================
+Triggers enforce, independently of any application code:
+  - the HOD cannot decide before the advisor,
+  - an advisor cannot decide twice,
+  - a closed request cannot change again,
+  - a result or an attachment requires an approved OD,
+  - a win must name a prize,
+  - references are OD-<year>-<counter>, unique and gapless per year.
 
-  flutter pub get
-  flutter analyze                 # must be clean
-  flutter test                    # validator unit tests
-  flutter run                     # debug on a connected device
-  flutter build apk --release     # release APK
-
-Output: build/app/outputs/flutter-apk/app-release.apk  (~54 MB)
-
-Pointing the app at a different backend or Clerk instance:
-
-  flutter build apk --release \
-    --dart-define=API_BASE_URL=https://your-host/api/mobile \
-    --dart-define=CLERK_PUBLISHABLE_KEY=pk_live_xxx
-
-Regenerating the launcher icon after replacing assets/app_icon.png:
-
-  dart run flutter_launcher_icons
-
-ALWAYS RUN `flutter clean` BEFORE A RELEASE BUILD YOU INTEND TO SHIP.
-This is not superstition. `flutter build apk` takes the version number from
-Gradle but can reuse a stale compiled Dart snapshot, which produced three
-releases (2.1.0, 2.2.0, 2.3.0) whose versionCode incremented while the app code
-inside did not change at all. The only reliable check is to read the compiled
-binary:
-
-  unzip -o -q app-release.apk -d out
-  grep -a "Continue with Google" out/lib/arm64-v8a/libapp.so     # must match
-  grep -a "Select your Class Advisor" out/lib/arm64-v8a/libapp.so # must not
-
-Note that Dart stores strings containing non-ASCII characters (for example a
-curly apostrophe) as UTF-16 in the snapshot, so a plain UTF-8 grep will report
-a false miss for those. Check both encodings.
-
-KNOWN LOCAL ISSUE: `flutter test` fails from this directory because the project
-path contains an apostrophe ("D:\Project's\..."). Flutter's generated test
-harness injects the path into a single-quoted Dart string and the apostrophe
-breaks it. The tests themselves pass when the project is copied to a path
-without one. Renaming the folder fixes it permanently.
+Files live in the private `od-files` bucket: 10 MB cap, MIME allowlist of
+JPEG, PNG, WebP and PDF, no public URL, read only through a five-minute
+signed URL.
 
 
 ================================================================================
-13. TESTS
+16. KNOWN LIMITS
 ================================================================================
 
-test/widget_test.dart - 4 unit tests over lib/utils/validators.dart:
-  validateCollegeEmail accepts official college emails
-  validateCollegeEmail rejects other domains and empty input
-  validateBatch accepts a four-year batch like 2023-2027
-  validateBatch rejects wrong formats and spans
-
-There are no widget or integration tests. The end-to-end behaviour is covered
-against the real API rather than in-app.
-
-
-================================================================================
-14. CURRENT LIMITATIONS
-================================================================================
-
-1. CLERK IS A DEVELOPMENT INSTANCE.
-   The publishable key is pk_test_..., so the sign-in screen shows Clerk's
-   "Development mode" banner and the instance is capped. Real use by a whole
-   department needs a Clerk PRODUCTION instance, which requires CNAME and DKIM
-   DNS records on smvec.ac.in.
-
-2. NOTIFICATIONS DO NOT REACH A CLOSED APP.
-   See section 9. Needs FCM and a Firebase project.
-
-3. clerk_flutter IS A 0.0.x BETA and community-maintained, not officially
-   supported by Clerk. Breaking changes are expected before 1.0.0.
-
-4. THE RELEASE APK IS SIGNED WITH THE DEBUG KEY.
-   Fine for sideloading, not acceptable for the Play Store.
-
-5. APK SIZE ~54 MB, driven by the Clerk SDK's transitive dependencies
-   (webview, passkeys, image_picker and others).
-
-6. NO OFFLINE MODE. Every screen needs the network; there is no local cache of
-   requests beyond what the last sync returned into memory.
-
-7. iOS IS UNVERIFIED. The icons and Info.plist are generated, but the app has
-   only been built and tested for Android.
-
-================================================================================
+  - Android only in practice. The iOS folders exist and the Dart is portable,
+    but no iOS build has been configured or tested.
+  - Debug signing. Fine for sideloading the APK, not for the Play Store.
+  - No offline mode. Every screen needs the network; there is no local cache
+    of OD data by design.
+  - Distribution is a direct APK download from the landing page. There is no
+    in-app update check, so a student on an old build stays on it until they
+    download again.
+  - The student half of the API cannot be exercised by an automated script,
+    because it requires a real Google sign-in. The workflow rules behind it are
+    tested directly against the database instead.
