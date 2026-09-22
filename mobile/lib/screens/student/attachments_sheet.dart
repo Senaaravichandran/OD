@@ -156,11 +156,13 @@ class _AttachmentsSheetState extends State<AttachmentsSheet> {
 
   @override
   Widget build(BuildContext context) {
-    // A prize photo only makes sense for a win.
-    final kinds = [
+    // All four are offered regardless of the result, because the evidence now
+    // comes first: a student cannot submit a win until the prize photo is
+    // already attached, so it cannot wait on request.won being true.
+    const kinds = [
       'CERTIFICATE',
-      if (widget.request.won) 'WINNING_PHOTO',
       'EVENT_PHOTO',
+      'WINNING_PHOTO',
       'SUPPORTING_DOCUMENT',
     ];
 

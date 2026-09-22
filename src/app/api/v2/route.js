@@ -211,6 +211,7 @@ async function changeClass(auth, p) {
 
 const REQUEST_COLUMNS = `
   r.id, r.reference_no, r.event_type, r.event_name, r.event_date, r.event_day,
+  r.event_end_date, r.day_count,
   r.description, r.submission_type, r.status, r.advisor_remarks, r.hod_remarks,
   r.advisor_decided_at, r.hod_decided_at, r.created_at,
   s.name as student_name, s.register_number, s.email as student_email,
@@ -225,11 +226,41 @@ const REQUEST_JOINS = `
   join staff st on st.id = r.advisor_staff_id
   left join od_results res on res.od_request_id = r.id`;
 
+const FILE_LABEL = {
+  CERTIFICATE: 'the certificate',
+  WINNING_PHOTO: 'the prize photo',
+  EVENT_PHOTO: 'a photo from the event',
+  SUPPORTING_DOCUMENT: 'a supporting document',
+};
+
+/// The evidence a result has to be backed by. A supporting document stays
+/// optional - it is the one attachment that is not always relevant.
+function requiredEvidence(status) {
+  return status === 'WON'
+    ? ['CERTIFICATE', 'EVENT_PHOTO', 'WINNING_PHOTO']
+    : ['CERTIFICATE', 'EVENT_PHOTO'];
+}
+
+/// "on 12 Mar 2026" or "from 12 Mar to 14 Mar 2026", for notification text.
+function describeDates(from, to) {
+  const fmt = (d) => new Date(`${d}T00:00:00Z`).toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC',
+  });
+  if (!to || to === from) return `on ${fmt(from)}`;
+  return `from ${fmt(from)} to ${fmt(to)}`;
+}
+
+const dateText = (v) => {
+  if (!v) return null;
+  return v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+};
+
 async function hydrate(rows) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
   const members = await query(
-    'select od_request_id, member_name, register_number from od_team_members where od_request_id = any($1) order by position',
+    `select id, od_request_id, member_name, register_number, contribution
+       from od_team_members where od_request_id = any($1) order by position`,
     [ids]
   );
   const files = await query(
@@ -248,10 +279,22 @@ async function hydrate(rows) {
     advisorName: r.advisor_name,
     advisorEmail: r.advisor_email,
     submissionType: r.submission_type,
+    // Names on their own, because most screens only list them, and the full
+    // people for the result screen and the reports, which need who did what.
     teamMembers: members.filter((m) => m.od_request_id === r.id).map((m) => m.member_name),
+    team: members
+      .filter((m) => m.od_request_id === r.id)
+      .map((m) => ({
+        id: m.id,
+        name: m.member_name,
+        registerNumber: m.register_number,
+        contribution: m.contribution,
+      })),
     eventType: r.event_type,
     eventName: r.event_name,
-    eventDate: r.event_date instanceof Date ? r.event_date.toISOString().slice(0, 10) : r.event_date,
+    eventDate: dateText(r.event_date),
+    eventEndDate: dateText(r.event_end_date) || dateText(r.event_date),
+    dayCount: r.day_count || 1,
     eventDay: r.event_day,
     description: r.description,
     status: r.status,
@@ -270,6 +313,59 @@ async function hydrate(rows) {
       mimeType: f.mime_type, sizeBytes: Number(f.size_bytes),
     })),
   }));
+}
+
+/// Turns one audit row into a sentence.
+///
+/// The HOD reads this screen to know what has been happening in the
+/// department, so it says "Aravind won First place at CodeFest" rather than
+/// RESULT_SUBMITTED and a blob of JSON.
+function auditSentence(a) {
+  const who = a.actor_name || a.actor_email || 'Someone';
+  const d = (typeof a.details === 'string' ? safeJson(a.details) : a.details) || {};
+  const event = a.event_name || d.event || 'an event';
+  const at = a.event_name || d.event ? ` for ${event}` : '';
+
+  switch (a.action) {
+    case 'OD_CREATED': {
+      const when = d.from && d.to && d.from !== d.to
+        ? ` (${d.days} days)`
+        : '';
+      return `${who} applied for an OD for ${event}${when}`;
+    }
+    case 'ADVISOR_APPROVED':
+      return `${who} recommended ${event} and sent it to the HOD`;
+    case 'ADVISOR_REJECTED':
+      return `${who} did not recommend ${event}`;
+    case 'HOD_APPROVED':
+      return `${who} sanctioned the OD for ${event}`;
+    case 'HOD_REJECTED':
+      return `${who} did not sanction the OD for ${event}`;
+    case 'RESULT_SUBMITTED':
+      return d.status === 'WON'
+        ? `${who} won ${d.prize || 'a prize'} at ${event}`
+        : `${who} took part in ${event}`;
+    case 'FILE_UPLOADED':
+      return `${who} attached ${FILE_LABEL[d.kind] || 'a file'}${at}`;
+    case 'FILE_DELETED':
+      return `${who} removed an attachment${at}`;
+    case 'PROFILE_COMPLETED':
+      return `${who} joined Year ${d.year} Section ${d.section}`;
+    case 'CLASS_CHANGED':
+      return `${who} moved to Year ${d.year} Section ${d.section}`;
+    case 'DEVICE_REGISTERED':
+      return `${who} signed in on a new device`;
+    default:
+      return `${who} - ${String(a.action).replace(/_/g, ' ').toLowerCase()}`;
+  }
+}
+
+function safeJson(v) {
+  try {
+    return JSON.parse(v);
+  } catch {
+    return {};
+  }
 }
 
 /// Everything the caller is allowed to see. Scoping happens in SQL, so a
@@ -305,8 +401,18 @@ async function sync(auth, p) {
 
   const auditLogs = auth.role === 'HOD'
     ? await query(
-        `select id, action, entity_type, entity_id, actor_email, actor_role, details, created_at
-           from audit_logs order by created_at desc limit 200`
+        `select a.id, a.action, a.entity_type, a.entity_id, a.actor_email,
+                a.actor_role, a.details, a.created_at,
+                coalesce(st.name, s.name, u.display_name,
+                         split_part(a.actor_email, '@', 1)) as actor_name,
+                r.event_name, r.reference_no
+           from audit_logs a
+           left join users u on u.id = a.actor_user_id
+           left join students s on s.user_id = a.actor_user_id
+           left join staff st on st.user_id = a.actor_user_id
+           left join od_requests r
+                  on a.entity_type = 'od_request' and r.id = a.entity_id
+          order by a.created_at desc limit 200`
       )
     : [];
 
@@ -319,9 +425,17 @@ async function sync(auth, p) {
         isRead: n.is_read, time: n.created_at,
       })),
       auditLogs: auditLogs.map((a) => ({
-        id: a.id, action: a.action, actor: a.actor_email, role: a.actor_role,
+        id: a.id,
+        action: a.action,
+        actor: a.actor_email,
+        actorName: a.actor_name,
+        role: a.actor_role,
+        // A sentence, because the HOD reads this to know what happened, not
+        // to decode it. The raw details stay available underneath.
+        summary: auditSentence(a),
         details: typeof a.details === 'string' ? a.details : JSON.stringify(a.details || {}),
-        requestId: a.entity_id, time: a.created_at,
+        requestId: a.entity_id,
+        time: a.created_at,
       })),
     },
   };
@@ -341,6 +455,20 @@ async function createOd(auth, p) {
 
   const submissionType = p.submissionType === 'TEAM' ? 'TEAM' : 'SOLO';
   const eventDate = dateOf(p.eventDate, 'Event date');
+
+  // The app sends a start date and how many days it runs; the end date is
+  // derived from those so the two can never disagree. An older client that
+  // sends neither is treated as the one-day request it means.
+  const dayCount = Math.min(Math.max(Number(p.dayCount) || 1, 1), 30);
+  let eventEndDate = p.eventEndDate ? dateOf(p.eventEndDate, 'Last day') : null;
+  if (!eventEndDate) {
+    const end = new Date(`${eventDate}T00:00:00Z`);
+    end.setUTCDate(end.getUTCDate() + dayCount - 1);
+    eventEndDate = end.toISOString().slice(0, 10);
+  }
+  if (eventEndDate < eventDate) {
+    throw new HttpError(400, 'The last day cannot be before the first day.');
+  }
   const members = submissionType === 'TEAM' && Array.isArray(p.teamMembers)
     ? p.teamMembers.map((m) => clean(m).slice(0, 80)).filter(Boolean).slice(0, 5)
     : [];
@@ -348,12 +476,13 @@ async function createOd(auth, p) {
   const created = await transaction(async (client) => {
     const { rows } = await client.query(
       `insert into od_requests (student_id, advisor_staff_id, class_assignment_id,
-                                event_type, event_name, event_date, event_day,
-                                description, submission_type)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id, reference_no`,
+                                event_type, event_name, event_date, event_end_date,
+                                day_count, event_day, description, submission_type)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id, reference_no`,
       [student.id, student.staff_id, student.class_assignment_id,
        text(p.eventType, 'Event type', 40), text(p.eventName, 'Event name', 120),
-       eventDate, clean(p.eventDay).slice(0, 12), text(p.description, 'Description', 1000),
+       eventDate, eventEndDate, dayCount,
+       clean(p.eventDay).slice(0, 12), text(p.description, 'Description', 1000),
        submissionType]
     );
     const req = rows[0];
@@ -366,7 +495,13 @@ async function createOd(auth, p) {
     await audit(client, {
       actorUserId: auth.userId, actorEmail: auth.email, actorRole: 'STUDENT',
       action: 'OD_CREATED', entityType: 'od_request', entityId: req.id,
-      details: { reference: req.reference_no, event: p.eventName },
+      details: {
+        reference: req.reference_no,
+        event: clean(p.eventName),
+        days: dayCount,
+        from: eventDate,
+        to: eventEndDate,
+      },
     });
     return req;
   });
@@ -377,7 +512,7 @@ async function createOd(auth, p) {
   if (advisorUser) {
     await notify(null, advisorUser.user_id, {
       title: 'New OD request',
-      body: `${student.name} (${student.register_number}) - ${clean(p.eventName)} on ${eventDate}`,
+      body: `${student.name} (${student.register_number}) - ${clean(p.eventName)}, ${describeDates(eventDate, eventEndDate)}`,
       odRequestId: created.id, category: 'OD_CREATED',
     });
   }
@@ -506,6 +641,42 @@ async function submitResult(auth, p) {
   const prize = clean(p.prize).slice(0, 80);
   if (status === 'WON' && !prize) throw new HttpError(400, 'Tell us which prize you won.');
 
+  // The result is a claim; the attachments are what backs it. The app blocks
+  // the button, and this is why the block cannot be worked around.
+  const attached = await query(
+    'select distinct kind from result_files where od_request_id = $1', [req.id]
+  );
+  const have = new Set(attached.map((f) => f.kind));
+  const missing = requiredEvidence(status).filter((k) => !have.has(k));
+  if (missing.length) {
+    const names = missing.map((k) => FILE_LABEL[k]);
+    const list = names.length === 1
+      ? names[0]
+      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    throw new HttpError(409, `Attach ${list} before submitting the result.`);
+  }
+
+  // A team result credits people. Every member needs their own contribution,
+  // supplied now or already recorded.
+  const team = await query(
+    'select id, member_name, contribution from od_team_members where od_request_id = $1 order by position',
+    [req.id]
+  );
+  const contributions = new Map();
+  if (req.submission_type === 'TEAM' && team.length) {
+    const sent = Array.isArray(p.teamContributions) ? p.teamContributions : [];
+    for (const member of team) {
+      const match = sent.find(
+        (c) => c && (c.id === member.id || clean(c.name) === member.member_name)
+      );
+      const value = clean(match?.contribution).slice(0, 400) || clean(member.contribution);
+      if (!value) {
+        throw new HttpError(400, `Tell us what ${member.member_name} contributed.`);
+      }
+      contributions.set(member.id, value);
+    }
+  }
+
   await transaction(async (client) => {
     await client.query(
       `insert into od_results (od_request_id, status, project_name, prize, prize_details, description)
@@ -521,8 +692,17 @@ async function submitResult(auth, p) {
     await audit(client, {
       actorUserId: auth.userId, actorEmail: auth.email, actorRole: 'STUDENT',
       action: 'RESULT_SUBMITTED', entityType: 'od_request', entityId: req.id,
-      details: { status, prize },
+      details: {
+        status,
+        prize,
+        project: clean(p.projectName).slice(0, 120) || req.event_name,
+      },
     });
+
+    for (const [id, value] of contributions) {
+      await client.query('update od_team_members set contribution = $1 where id = $2',
+        [value, id]);
+    }
   });
 
   const advisorUser = await one('select user_id from staff where id = $1', [req.advisor_staff_id]);

@@ -31,6 +31,7 @@ class _NewOdSheetState extends State<NewOdSheet> {
   String _eventType = AppConfig.eventTypes.first;
   String _submissionType = 'SOLO';
   DateTime _eventDate = DateTime.now().add(const Duration(days: 3));
+  int _dayCount = 1;
   bool _busy = false;
   String? _error;
 
@@ -52,14 +53,33 @@ class _NewOdSheetState extends State<NewOdSheet> {
     super.dispose();
   }
 
+  /// The last day the OD covers. One day means it ends where it starts.
+  DateTime get _endDate => _eventDate.add(Duration(days: _dayCount - 1));
+
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
       initialDate: _eventDate,
       firstDate: DateTime.now().subtract(const Duration(days: 30)),
       lastDate: DateTime.now().add(const Duration(days: 365)),
+      helpText: 'First day of the event',
     );
     if (picked != null) setState(() => _eventDate = picked);
+  }
+
+  /// Picking the last day instead sets the number of days, so the two
+  /// controls can never disagree.
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate,
+      firstDate: _eventDate,
+      lastDate: _eventDate.add(const Duration(days: 29)),
+      helpText: 'Last day of the event',
+    );
+    if (picked == null) return;
+    final days = picked.difference(_eventDate).inDays + 1;
+    setState(() => _dayCount = days.clamp(1, 30));
   }
 
   Future<void> _submit() async {
@@ -73,6 +93,8 @@ class _NewOdSheetState extends State<NewOdSheet> {
         eventType: _eventType,
         eventName: _eventName.text.trim(),
         eventDate: _eventDate,
+        eventEndDate: _endDate,
+        dayCount: _dayCount,
         eventDay: weekdayOf(_eventDate),
         description: _description.text.trim(),
         submissionType: _submissionType,
@@ -186,11 +208,39 @@ class _NewOdSheetState extends State<NewOdSheet> {
                       borderRadius: BorderRadius.circular(10),
                       child: InputDecorator(
                         decoration: const InputDecoration(
-                          labelText: 'Event date',
+                          labelText: 'First day',
                           prefixIcon: Icon(Icons.calendar_today_outlined, size: 19),
                         ),
                         child: Text(
                           '${fmtDate(_eventDate)} · ${weekdayOf(_eventDate)}',
+                          style: const TextStyle(fontSize: 14.5),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    _DayCount(
+                      days: _dayCount,
+                      onChanged: (d) => setState(() => _dayCount = d),
+                    ),
+                    const SizedBox(height: 14),
+
+                    InkWell(
+                      onTap: _pickEndDate,
+                      borderRadius: BorderRadius.circular(10),
+                      child: InputDecorator(
+                        decoration: InputDecoration(
+                          labelText: 'Last day',
+                          prefixIcon: const Icon(Icons.event_available_outlined, size: 19),
+                          // The last day follows from the first day and the
+                          // count; tapping it is a shortcut, not a third
+                          // independent value.
+                          helperText: _dayCount == 1
+                              ? 'A one-day event'
+                              : '$_dayCount days of OD',
+                        ),
+                        child: Text(
+                          '${fmtDate(_endDate)} · ${weekdayOf(_endDate)}',
                           style: const TextStyle(fontSize: 14.5),
                         ),
                       ),
@@ -376,6 +426,48 @@ class _TeamMembers extends StatelessWidget {
           style: TextStyle(fontSize: 11.5, color: AppTheme.muted),
         ),
       ],
+    );
+  }
+}
+
+
+/// How many days the OD covers. A stepper rather than a text field: the
+/// answer is almost always one to three, and typing invites "0" and "1O".
+class _DayCount extends StatelessWidget {
+  const _DayCount({required this.days, required this.onChanged});
+
+  final int days;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return InputDecorator(
+      decoration: const InputDecoration(
+        labelText: 'Number of days',
+        prefixIcon: Icon(Icons.date_range_outlined, size: 19),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              days == 1 ? '1 day' : '$days days',
+              style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
+            ),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.remove_circle_outline_rounded, size: 22),
+            onPressed: days > 1 ? () => onChanged(days - 1) : null,
+            tooltip: 'One day fewer',
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.add_circle_outline_rounded, size: 22),
+            onPressed: days < 30 ? () => onChanged(days + 1) : null,
+            tooltip: 'One day more',
+          ),
+        ],
+      ),
     );
   }
 }

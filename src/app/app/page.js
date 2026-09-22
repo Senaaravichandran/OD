@@ -72,12 +72,23 @@ async function api(action, payload = {}, { authenticated = true, retried = false
   return data;
 }
 
+/// The last day an OD covers, from its first day and how long it runs. Done
+/// in UTC so a browser east or west of the server cannot shift it a day.
+function addDays(iso, days) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 function currentBatch() {
   const y = new Date().getFullYear();
   return `${y - 1}-${y + 3}`;
 }
 
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
+const fmtRange = (r) => (r.eventEndDate && r.eventEndDate !== r.eventDate
+  ? `${fmtDate(r.eventDate)} – ${fmtDate(r.eventEndDate)} (${r.dayCount || 1} days)`
+  : fmtDate(r.eventDate));
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 
 // ---------------------------------------------------------------------------
@@ -572,6 +583,7 @@ function NewOdModal({ ctx, onClose }) {
       eventType: 'Hackathon',
       eventName: '',
       eventDate: d.toISOString().slice(0, 10),
+      dayCount: 1,
       description: '',
       teamMembers: [`${user.name} (${user.registerNumber || ''})`],
     };
@@ -587,7 +599,13 @@ function NewOdModal({ ctx, onClose }) {
     setBusy(true);
     try {
       const day = DAYS[new Date(`${form.eventDate}T00:00:00`).getDay()];
-      const res = await call('CREATE_OD', { ...form, eventDay: day, teamMembers: form.submissionType === 'TEAM' ? form.teamMembers : [] });
+      const res = await call('CREATE_OD', {
+        ...form,
+        eventDay: day,
+        dayCount: Number(form.dayCount) || 1,
+        eventEndDate: addDays(form.eventDate, (Number(form.dayCount) || 1) - 1),
+        teamMembers: form.submissionType === 'TEAM' ? form.teamMembers : [],
+      });
       upsert(res.request);
       setToast('OD request submitted to your advisor.');
       onClose();
@@ -613,8 +631,25 @@ function NewOdModal({ ctx, onClose }) {
               ))}
             </select>
           </Field>
-          <Field label="Event date">
+          <Field label="First day" group>
             <input type="date" className={styles.input} value={form.eventDate} onChange={set('eventDate')} required />
+          </Field>
+          <Field label="Number of days" group>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              className={styles.input}
+              value={form.dayCount}
+              onChange={set('dayCount')}
+              required
+            />
+          </Field>
+          <Field label="Last day">
+            {/* Derived, so the two cannot disagree. */}
+            <p className={styles.muted}>
+              {fmtDate(addDays(form.eventDate, (Number(form.dayCount) || 1) - 1))}
+            </p>
           </Field>
         </div>
         <Field label="Event name">
@@ -676,15 +711,33 @@ function NewOdModal({ ctx, onClose }) {
   );
 }
 
+const EVIDENCE_LABEL = {
+  CERTIFICATE: 'Certificate',
+  EVENT_PHOTO: 'Photo from the event',
+  WINNING_PHOTO: 'Prize photo',
+};
+
+/// What a result has to be backed by. The server applies the same rule; this
+/// is so the button explains itself instead of failing.
+const evidenceFor = (status) => (status === 'WON'
+  ? ['CERTIFICATE', 'EVENT_PHOTO', 'WINNING_PHOTO']
+  : ['CERTIFICATE', 'EVENT_PHOTO']);
+
 function ResultModal({ ctx, request, onClose }) {
   const { call, upsert, setToast } = ctx;
   const [status, setStatus] = useState('PARTICIPATED');
   const [projectName, setProjectName] = useState(request.eventName);
+  const [contributions, setContributions] = useState(() => Object.fromEntries(
+    (request.team || []).map((m) => [m.id, m.contribution || '']),
+  ));
   const [prize, setPrize] = useState('');
   const [prizeDetails, setPrizeDetails] = useState('');
   const [description, setDescription] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const have = new Set((request.files || []).map((f) => f.kind));
+  const missing = evidenceFor(status).filter((k) => !have.has(k));
 
   const submit = async (ev) => {
     ev.preventDefault();
@@ -699,6 +752,10 @@ function ResultModal({ ctx, request, onClose }) {
         // Only meaningful for a win, and the server insists on it there.
         prize: status === 'WON' ? prize : '',
         prizeDetails: status === 'WON' ? prizeDetails : '',
+        teamContributions: (request.team || []).map((m) => ({
+          id: m.id,
+          contribution: contributions[m.id] || '',
+        })),
       });
       upsert(res.request);
       setToast('Result saved.');
@@ -754,9 +811,53 @@ function ResultModal({ ctx, request, onClose }) {
         <Field label="Details">
           <textarea className={styles.input} rows={3} value={description} onChange={(e) => setDescription(e.target.value)} maxLength={1000} />
         </Field>
+
+        {request.submissionType === 'TEAM' && (request.team || []).length > 0 && (
+          <>
+            <p className={styles.muted}>
+              The department credits people, not entries. Say what each member
+              contributed.
+            </p>
+            {(request.team || []).map((m) => (
+              <Field key={m.id} label={m.name}>
+                <textarea
+                  className={styles.input}
+                  rows={2}
+                  value={contributions[m.id] || ''}
+                  onChange={(e) => setContributions(
+                    (c) => ({ ...c, [m.id]: e.target.value }),
+                  )}
+                  maxLength={400}
+                  required
+                  placeholder="Built the backend, presented the paper…"
+                />
+              </Field>
+            ))}
+          </>
+        )}
+
+        <Field label="Evidence">
+          <ul className={styles.evidenceList}>
+            {evidenceFor(status).map((kind) => {
+              const done = (request.files || []).some((f) => f.kind === kind);
+              return (
+                <li key={kind} className={done ? styles.evidenceDone : styles.evidenceTodo}>
+                  {done ? '✓' : '○'} {EVIDENCE_LABEL[kind]}
+                </li>
+              );
+            })}
+          </ul>
+          {missing.length > 0 && (
+            <p className={styles.muted}>
+              Attach these from the Android app — that is where the photographs
+              are. The result can be saved once they are in.
+            </p>
+          )}
+        </Field>
+
         <ErrorBox text={error} />
-        <button type="submit" className={styles.primaryBtn} disabled={busy}>
-          {busy ? 'Saving…' : 'Save result'}
+        <button type="submit" className={styles.primaryBtn} disabled={busy || missing.length > 0}>
+          {busy ? 'Saving…' : missing.length > 0 ? 'Attach the evidence first' : 'Save result'}
         </button>
       </form>
     </Modal>
@@ -949,9 +1050,30 @@ function HodView({ data, ctx }) {
   }, [tab, reqs, awaiting, query]);
 
   const exportCsv = () => {
-    const cols = ['id', 'studentName', 'registerNumber', 'year', 'section', 'advisorName', 'eventType', 'eventName', 'eventDate', 'submissionType', 'status', 'resultStatus', 'createdAt'];
+    // What students achieved, not the approval trail: the app's PDF and Word
+    // exports carry the same fields, with the photographs embedded.
+    const cols = [
+      ['Student', (r) => r.studentName],
+      ['Register No', (r) => r.registerNumber],
+      ['Year', (r) => r.year],
+      ['Section', (r) => r.section],
+      ['Event', (r) => r.eventName],
+      ['Dates', (r) => fmtRange(r)],
+      ['Days', (r) => r.dayCount || 1],
+      ['Project', (r) => r.resultProjectName || r.eventName],
+      ['Result', (r) => (r.resultStatus === 'PENDING' ? 'Not submitted' : r.resultStatus)],
+      ['Prize', (r) => r.resultPrize || ''],
+      ['Description', (r) => r.resultDescription || r.description],
+      ['Team members', (r) => (r.teamMembers || []).join('; ')],
+      ['Contribution', (r) => (r.team || [])
+        .map((m) => `${m.name}: ${m.contribution || 'not recorded'}`).join(' | ')],
+      ['Photos', (r) => (r.files || []).map((f) => f.fileName).join('; ')],
+    ];
     const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const csv = [cols.join(','), ...reqs.map((r) => cols.map((c) => escape(r[c])).join(','))].join('\n');
+    const csv = [
+      cols.map(([h]) => h).join(','),
+      ...reqs.map((r) => cols.map(([, get]) => escape(get(r))).join(',')),
+    ].join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a');
     a.href = url;
@@ -999,15 +1121,16 @@ function HodView({ data, ctx }) {
           <div className={styles.tableWrap}>
             <table className={styles.table}>
               <thead>
-                <tr><th>Time</th><th>Action</th><th>By</th><th>Details</th></tr>
+                <tr><th>Time</th><th>What happened</th><th>By</th></tr>
               </thead>
               <tbody>
                 {data.auditLogs.map((a) => (
                   <tr key={a.id + a.time}>
                     <td>{fmtTime(a.time)}</td>
-                    <td>{a.action.replace(/_/g, ' ').toLowerCase()}</td>
+                    {/* The sentence the server composed, where the event name
+                        and the person's name were both to hand. */}
+                    <td>{a.summary || a.action.replace(/_/g, ' ').toLowerCase()}</td>
                     <td>{a.actor}</td>
-                    <td>{a.details}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1094,8 +1217,8 @@ function RequestCard({ r, showStudent, showAdvisor, showStepper, children }) {
           </div>
           <h4 className={styles.cardEvent}>{r.eventName}</h4>
           <p className={styles.muted}>
-            {fmtDate(r.eventDate)}
-            {r.eventDay ? ` (${r.eventDay})` : ''}
+            {fmtRange(r)}
+            {r.eventDay && !r.eventEndDate ? ` (${r.eventDay})` : ''}
             {showStudent && ` · ${r.studentName} (${r.registerNumber}) · Year ${r.year} Sec ${r.section}`}
             {showAdvisor && ` · Advisor: ${r.advisorName}`}
             {!showStudent && ` · Advisor: ${r.advisorName}`}

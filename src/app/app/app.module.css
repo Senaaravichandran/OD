@@ -937,3 +937,22 @@ textarea.input {
   font-size: 0.75rem;
   font-weight: 600;
 }
+
+/* The evidence checklist in the result dialog. */
+.evidenceList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.evidenceDone {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.evidenceTodo {
+  color: var(--muted);
+}

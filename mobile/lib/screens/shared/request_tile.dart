@@ -93,7 +93,12 @@ class RequestTile extends StatelessWidget {
                 runSpacing: 6,
                 children: [
                   _meta(Icons.category_outlined, r.eventType),
-                  _meta(Icons.event_outlined, fmtDate(r.eventDate)),
+                  _meta(
+                    Icons.event_outlined,
+                    r.spansDays
+                        ? '${fmtDate(r.eventDate)} - ${fmtDate(r.eventEndDate)}'
+                        : fmtDate(r.eventDate),
+                  ),
                   if (showStudent)
                     _meta(Icons.school_outlined, 'Year ${r.year} · ${r.section}'),
                   if (r.isTeam)

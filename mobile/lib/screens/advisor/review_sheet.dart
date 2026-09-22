@@ -178,7 +178,13 @@ class _ReviewSheetState extends State<ReviewSheet> {
                       child: Column(
                         children: [
                           DetailRow(label: 'Type', value: r.eventType),
-                          DetailRow(label: 'Date', value: '${fmtDate(r.eventDate)} · ${r.eventDay}'),
+                          DetailRow(
+                            label: r.spansDays ? 'Dates' : 'Date',
+                            value: r.spansDays
+                                ? '${fmtDate(r.eventDate)} - ${fmtDate(r.eventEndDate)}'
+                                : '${fmtDate(r.eventDate)} · ${r.eventDay}',
+                          ),
+                          DetailRow(label: 'Duration', value: r.durationLabel),
                           DetailRow(
                             label: 'Participation',
                             value: r.isTeam ? 'Team (${r.teamMembers.length})' : 'Individual',

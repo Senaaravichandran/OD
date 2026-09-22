@@ -1,8 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:open_filex/open_filex.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../../config/app_config.dart';
 import '../../models/od_request.dart';
@@ -11,8 +9,9 @@ import '../../services/report_export.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
 import '../shared/request_tile.dart';
+import 'report_detail_screen.dart';
 
-enum ReportScope { advisor, hod }
+enum ReportScope { student, advisor, hod }
 
 /// Reports, with search, filters, and export to PDF, Excel or Word.
 ///
@@ -41,6 +40,7 @@ class _ReportsTabState extends State<ReportsTab> {
   String? _result;
   DateTimeRange? _range;
   bool _exporting = false;
+  String _exportStep = '';
 
   @override
   void initState() {
@@ -136,104 +136,68 @@ class _ReportsTabState extends State<ReportsTab> {
     });
   }
 
+  /// Exports what is on screen. With nothing filtered that is everything the
+  /// caller is allowed to see, which the server already decided.
   Future<void> _export(String format) async {
     final rows = _filtered;
     if (rows.isEmpty) {
-      showToast(context, 'Nothing to export with these filters.', error: true);
+      showToast(
+        context,
+        _hasFilters ? 'Nothing matches these filters.' : 'There is nothing to export yet.',
+        error: true,
+      );
       return;
     }
-    setState(() => _exporting = true);
+    setState(() {
+      _exporting = true;
+      _exportStep = 'Collecting photographs…';
+    });
     try {
-      final title = widget.scope == ReportScope.hod
-          ? 'Department OD Report'
-          : 'Class OD Report';
+      // Each photograph is a signed-URL fetch, so this is the slow part; say
+      // where it has got to rather than showing a spinner for a minute.
+      final records = await ReportExport.gather(
+        rows,
+        // Excel cannot embed images, so there is no point downloading them.
+        withPhotos: format != 'excel',
+        onProgress: (done, total) {
+          if (mounted && total > 1) {
+            setState(() => _exportStep = 'Preparing $done of $total…');
+          }
+        },
+      );
+      if (!mounted) return;
+      setState(() => _exportStep = 'Building the document…');
+
       final File file = switch (format) {
         'pdf' => await ReportExport.toPdf(
-            rows: rows, title: title, filters: _appliedFilters),
+            records: records, title: _title, filters: _appliedFilters),
         'excel' => await ReportExport.toExcel(
-            rows: rows, title: title, filters: _appliedFilters),
+            records: records, title: _title, filters: _appliedFilters),
         _ => await ReportExport.toWord(
-            rows: rows, title: title, filters: _appliedFilters),
+            records: records, title: _title, filters: _appliedFilters),
       };
       if (!mounted) return;
-      setState(() => _exporting = false);
-      await _offerFile(file, rows.length);
+      setState(() {
+        _exporting = false;
+        _exportStep = '';
+      });
+      await showExportResult(context, file, rows.length);
     } catch (e) {
       if (mounted) {
-        setState(() => _exporting = false);
+        setState(() {
+          _exporting = false;
+          _exportStep = '';
+        });
         showToast(context, 'Export failed: $e', error: true);
       }
     }
   }
 
-  Future<void> _offerFile(File file, int count) async {
-    if (!mounted) return;
-    await showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 38,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(
-                color: AppTheme.border,
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-            const Icon(Icons.task_alt_rounded, size: 40, color: AppTheme.success),
-            const SizedBox(height: 12),
-            Text(
-              'Report saved',
-              style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '$count record${count == 1 ? '' : 's'}\n${file.path.split(Platform.pathSeparator).last}',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 12.5, color: AppTheme.muted, height: 1.4),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      Share.shareXFiles([XFile(file.path)]);
-                    },
-                    icon: const Icon(Icons.share_outlined, size: 18),
-                    label: const Text('Share'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      OpenFilex.open(file.path);
-                    },
-                    icon: const Icon(Icons.open_in_new_rounded, size: 18),
-                    label: const Text('Open'),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  String get _title => switch (widget.scope) {
+        ReportScope.hod => 'Department OD Report',
+        ReportScope.advisor => 'Class OD Report',
+        ReportScope.student => 'My OD Report',
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -251,7 +215,9 @@ class _ReportsTabState extends State<ReportsTab> {
             onChanged: (v) => setState(() => _query = v.trim()),
             decoration: InputDecoration(
               isDense: true,
-              hintText: 'Search student, register no., event, project, prize',
+              hintText: widget.scope == ReportScope.student
+                ? 'Search event, project, prize'
+                : 'Search student, register no., event, project, prize',
               prefixIcon: const Icon(Icons.search_rounded, size: 20),
               suffixIcon: _query.isEmpty
                   ? null
@@ -271,10 +237,14 @@ class _ReportsTabState extends State<ReportsTab> {
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
             children: [
-              _dropdown<int>('Year', _year, years,
-                  (v) => setState(() => _year = v), (v) => 'Year $v'),
-              _dropdown<String>('Section', _section, sections,
-                  (v) => setState(() => _section = v), (v) => 'Section $v'),
+              // A student only ever sees their own class, so offering to
+              // filter by it would be a control that does nothing.
+              if (widget.scope != ReportScope.student) ...[
+                _dropdown<int>('Year', _year, years,
+                    (v) => setState(() => _year = v), (v) => 'Year $v'),
+                _dropdown<String>('Section', _section, sections,
+                    (v) => setState(() => _section = v), (v) => 'Section $v'),
+              ],
               _dropdown<String>('Event', _eventType, AppConfig.eventTypes,
                   (v) => setState(() => _eventType = v), (v) => v),
               _dropdown<String>('Status', _status,
@@ -332,65 +302,33 @@ class _ReportsTabState extends State<ReportsTab> {
                 ),
               ),
               if (_exporting)
-                const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else
-                PopupMenuButton<String>(
-                  onSelected: _export,
-                  position: PopupMenuPosition.under,
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'pdf',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.picture_as_pdf_outlined, size: 20),
-                        title: Text('Export as PDF'),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_exportStep.isNotEmpty) ...[
+                      Text(
+                        _exportStep,
+                        style: const TextStyle(fontSize: 12, color: AppTheme.muted),
                       ),
-                    ),
-                    PopupMenuItem(
-                      value: 'excel',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.table_chart_outlined, size: 20),
-                        title: Text('Export as Excel'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'word',
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(Icons.description_outlined, size: 20),
-                        title: Text('Export as Word'),
-                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
                     ),
                   ],
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: AppTheme.primary,
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.download_rounded, size: 17, color: Colors.white),
-                        SizedBox(width: 6),
-                        Text(
-                          'Export As',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
+                )
+              else
+                Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.primary,
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: ExportMenu(
+                    onSelected: _export,
+                    label: _hasFilters ? 'Export filtered' : 'Export all',
+                    onPrimary: true,
                   ),
                 ),
             ],
@@ -403,7 +341,9 @@ class _ReportsTabState extends State<ReportsTab> {
                   title: _hasFilters ? 'Nothing matches' : 'No data yet',
                   message: _hasFilters
                       ? 'Try widening or clearing the filters.'
-                      : 'Reports fill in as OD requests are raised.',
+                      : widget.scope == ReportScope.student
+                          ? 'Your reports appear here once you have raised an OD.'
+                          : 'Reports fill in as OD requests are raised.',
                   action: _hasFilters
                       ? TextButton(
                           onPressed: _clearFilters,
@@ -416,7 +356,12 @@ class _ReportsTabState extends State<ReportsTab> {
                   itemCount: rows.length,
                   itemBuilder: (_, i) => RequestTile(
                     request: rows[i],
-                    onTap: () {},
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ReportDetailScreen(request: rows[i]),
+                      ),
+                    ),
                   ),
                 ),
         ),

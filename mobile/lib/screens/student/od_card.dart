@@ -49,7 +49,7 @@ class OdCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        '${r.eventType} · ${fmtDate(r.eventDate)}'
+                        '${r.eventType} · ${r.spansDays ? '${fmtDate(r.eventDate)} - ${fmtDate(r.eventEndDate)}' : fmtDate(r.eventDate)}'
                         '${r.eventDay.isEmpty ? '' : ' · ${r.eventDay}'}',
                         style: const TextStyle(fontSize: 12.5, color: AppTheme.muted),
                       ),

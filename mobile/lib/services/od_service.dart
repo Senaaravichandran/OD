@@ -178,22 +178,29 @@ class ODService extends ChangeNotifier {
     return updated;
   }
 
+  /// The date the API wants: plain yyyy-MM-dd, with no timezone to shift it
+  /// across midnight.
+  static String _ymd(DateTime d) => '${d.year}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
   Future<ODRequest> createOd({
     required String eventType,
     required String eventName,
     required DateTime eventDate,
+    required DateTime eventEndDate,
+    required int dayCount,
     required String eventDay,
     required String description,
     required String submissionType,
     required List<String> teamMembers,
   }) async {
-    final date = '${eventDate.year}-'
-        '${eventDate.month.toString().padLeft(2, '0')}-'
-        '${eventDate.day.toString().padLeft(2, '0')}';
     final res = await _call('CREATE_OD', {
       'eventType': eventType,
       'eventName': eventName,
-      'eventDate': date,
+      'eventDate': _ymd(eventDate),
+      'eventEndDate': _ymd(eventEndDate),
+      'dayCount': dayCount,
       'eventDay': eventDay,
       'description': description,
       'submissionType': submissionType,
@@ -209,6 +216,9 @@ class ODService extends ChangeNotifier {
     String? prize,
     String? prizeDetails,
     String? description,
+    /// One entry per team member: {'id': ..., 'contribution': ...}. The server
+    /// refuses a team result with anyone unaccounted for.
+    List<Map<String, String>> teamContributions = const [],
   }) async {
     final res = await _call('SUBMIT_RESULT', {
       'reqId': requestId,
@@ -217,6 +227,7 @@ class ODService extends ChangeNotifier {
       if (prize != null) 'prize': prize,
       if (prizeDetails != null) 'prizeDetails': prizeDetails,
       if (description != null) 'description': description,
+      if (teamContributions.isNotEmpty) 'teamContributions': teamContributions,
     });
     return _upsert(res['request'] as Map<String, dynamic>);
   }

@@ -64,9 +64,10 @@ class _HodAuditTabState extends State<HodAuditTab> {
       final q = _query.toLowerCase();
       logs = logs
           .where((l) =>
-              l.action.toLowerCase().contains(q) ||
+              l.line.toLowerCase().contains(q) ||
+              l.actorName.toLowerCase().contains(q) ||
               l.actor.toLowerCase().contains(q) ||
-              l.details.toLowerCase().contains(q))
+              l.action.toLowerCase().contains(q))
           .toList();
     }
 
@@ -151,37 +152,33 @@ class _AuditTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // The sentence, not the action code. This screen is read
+                      // to know what has been happening, not to decode it.
                       Expanded(
                         child: Text(
-                          entry.actionLabel,
+                          entry.line,
                           style: const TextStyle(
                             fontSize: 13.5,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w600,
+                            height: 1.35,
                             color: AppTheme.ink,
                           ),
                         ),
                       ),
+                      const SizedBox(width: 8),
                       Text(
                         fmtRelative(entry.timestamp),
                         style: const TextStyle(fontSize: 11, color: AppTheme.muted),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 3),
+                  const SizedBox(height: 4),
                   Text(
                     entry.actor,
-                    style: const TextStyle(fontSize: 12, color: AppTheme.muted),
+                    style: const TextStyle(fontSize: 11.5, color: AppTheme.muted),
                   ),
-                  if (entry.details.isNotEmpty && entry.details != '{}') ...[
-                    const SizedBox(height: 5),
-                    Text(
-                      entry.details,
-                      style: const TextStyle(fontSize: 11.5, color: AppTheme.muted),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
                 ],
               ),
             ),

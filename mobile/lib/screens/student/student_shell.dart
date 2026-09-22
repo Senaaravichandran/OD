@@ -4,6 +4,7 @@ import '../../models/user.dart';
 import '../../services/od_service.dart';
 import '../../theme.dart';
 import '../notifications_sheet.dart';
+import '../reports/reports_tab.dart';
 import 'student_od_tab.dart';
 import 'student_history_tab.dart';
 import 'student_profile_tab.dart';
@@ -84,6 +85,9 @@ class _StudentShellState extends State<StudentShell> {
         children: [
           StudentOdTab(user: user),
           const StudentHistoryTab(),
+          // The student's own record of what they entered and what came of it,
+          // exportable the same way the advisor's and the HOD's are.
+          const ReportsTab(scope: ReportScope.student),
           StudentProfileTab(user: user, onSignOut: widget.onSignOut),
         ],
       ),
@@ -100,6 +104,11 @@ class _StudentShellState extends State<StudentShell> {
             icon: Icon(Icons.history_outlined),
             selectedIcon: Icon(Icons.history_rounded),
             label: 'Previous',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.bar_chart_outlined),
+            selectedIcon: Icon(Icons.bar_chart_rounded),
+            label: 'Reports',
           ),
           NavigationDestination(
             icon: Icon(Icons.person_outline_rounded),
