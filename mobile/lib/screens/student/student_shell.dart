@@ -52,7 +52,7 @@ class _StudentShellState extends State<StudentShell> {
   @override
   Widget build(BuildContext context) {
     final user = _od.user ?? widget.user;
-    final titles = ['On Duty', 'Previous ODs', 'Profile'];
+    final titles = ['On Duty', 'Previous ODs', 'Reports', 'Profile'];
 
     return Scaffold(
       appBar: AppBar(
