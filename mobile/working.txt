@@ -9,7 +9,7 @@ where the app talks to them.
 
 App id ........... edu.smvec.it.smvec_od
 App name ......... SMVEC-IT OD
-Version .......... 3.1.0+10  (versionName 3.1.0, versionCode 10)
+Version .......... 3.2.0+11  (versionName 3.2.0, versionCode 11)
 Dart package ..... smvec_od
 Purpose .......... Students raise On-Duty (OD) requests for events. Their class
                    advisor recommends, the HOD sanctions, the student is pushed
@@ -52,7 +52,7 @@ Linting ................ flutter_lints ^5.0.0 (analysis_options.yaml)
 Build system (Android).. Gradle with Kotlin DSL (build.gradle.kts)
 Google services ........ com.google.gms.google-services 4.4.2
 Java / Kotlin .......... Java 11 target, core library desugaring ON
-Total Dart code ........ 42 files, ~9,100 lines under lib/
+Total Dart code ........ 43 files, ~9,900 lines under lib/
 Total packages ......... 125 resolved packages (20 direct, rest transitive)
 State management ....... none. A ChangeNotifier singleton (ODService) plus
                          setState. No Provider, Riverpod, BLoC or GetX.
@@ -110,7 +110,7 @@ No code generation ........... models are hand-written fromJson/toJson. There
                                is no build_runner step to forget.
 No Supabase client SDK ....... the app never talks to Postgres or Storage
                                directly. It has no database credentials at all.
-No secrets in the app ........ see section 11.
+No secrets in the app ........ see section 12.
 
 
 ================================================================================
@@ -143,14 +143,15 @@ lib/
     auth_screen.dart               Google, or email+password for staff
     registration_screen.dart       first-time student profile
     notifications_sheet.dart       the bell
-    student/                       student_shell + 3 tabs, new OD, result,
+    student/                       student_shell + 4 tabs, new OD, result,
                                    od_card, od_progress, attachments_sheet
     advisor/                       advisor_shell + 5 tabs, review_sheet
     hod/                           hod_shell + 6 tabs, audit log
     shared/                        request_tile, students_tab,
                                    student_detail_screen, staff_profile_tab,
                                    file_viewer
-    reports/reports_tab.dart       search, filters, export
+    reports/                       reports_tab (search, filters, export) and
+                                   report_detail_screen (one record in full)
 
 There is no router package. main.dart's AppGate decides what to show, and
 everything after that is a Navigator push or a bottom sheet.
@@ -345,9 +346,15 @@ because skipping the class advisor is the one thing the department cannot have.
     Event type      one of seven (Hackathon, Internship, Paper Presentation,
                     Workshop, Symposium, Sports, Other)
     Event name
-    Event date      a date picker; the day name is derived, not typed
+    First day       a date picker; the day name is derived, not typed
+    Number of days  a stepper, 1 to 30
+    Last day        derived from the two above, so the range cannot contradict
+                    itself. Tapping it is a shortcut that sets the count.
     Description
     Solo or Team    team adds a member list, pre-filled with the student
+
+An OD covers a stretch of days. A symposium running Thursday to Saturday is
+one request with day_count 3, not three requests or a note in the description.
 
 7.2 REVIEWING  (review_sheet.dart)
 ----------------------------------
@@ -368,6 +375,23 @@ says what the student will be told.
 Once an OD is sanctioned the student records the outcome: participated, or won
 with a prize. A win must name the prize - the server and a database constraint
 both insist.
+
+A result is a claim, so it cannot be filed before the evidence is attached:
+
+    CERTIFICATE     always required
+    EVENT_PHOTO     always required
+    WINNING_PHOTO   required for a win
+    SUPPORTING_DOC  optional
+
+The sheet shows the checklist, attaches in place, and keeps the submit button
+disabled until it is satisfied - with the button's own label saying why. The
+server applies the same rule, so the block cannot be worked around. Note that
+the attachment sheet offers all four kinds regardless of the result: the prize
+photo has to go in before the result says there was a prize.
+
+For a team entry, every member's contribution is named here. The department
+credits people, not rows, and the server refuses a team result with anyone
+unaccounted for.
 
 
 ================================================================================
@@ -464,11 +488,12 @@ returned and calls MARK_READ.
 10. THE THREE APPS INSIDE THE APP
 ================================================================================
 
-10.1 STUDENT  (student_shell.dart - 3 tabs)
+10.1 STUDENT  (student_shell.dart - 4 tabs)
 -------------------------------------------
     OD Requests   active requests, each with a progress stepper showing where
                   it is in the chain; + New OD
     Previous      closed requests, with results and attachments
+    Reports       their own record, searchable and exportable
     Profile       name, register number, class, advisor, wrong-class fix,
                   sign out
 
@@ -489,7 +514,10 @@ roster.
     Requests      everything, with "awaiting sanction" first
     Students      every student in the department
     Reports       search, filter, export
-    Audit         who did what, when - the HOD only
+    Audit         who did what, when - the HOD only. Each line is a sentence
+                  ("Aravind won First place at CodeFest"), composed on the
+                  server where the event name and the person's name are both
+                  to hand. The raw details are still stored underneath.
     Profile       sign out
 
 The audit log is returned by SYNC only when the caller is the HOD. An advisor
@@ -497,25 +525,57 @@ asking for it gets nothing.
 
 
 ================================================================================
-11. REPORTS AND EXPORTS  (reports/reports_tab.dart, report_export.dart)
+11. REPORTS AND EXPORTS  (reports/, report_export.dart)
 ================================================================================
 
-Search across student name, register number, event, advisor and reference.
+The same tab serves all three roles, scoped by what the server already
+returned: a student sees their own record, an advisor their class, the HOD the
+department. A student is not offered the year and section filters, since they
+only ever have one of each.
+
+Search across student name, register number, event, project and prize.
 Filters: status, result, year, section, event type, date range.
 
-Export As -> PDF, Excel or Word.
+11.1 ONE RECORD  (report_detail_screen.dart)
+--------------------------------------------
+Tapping a row opens the record in full: the student, the event and its dates,
+the project, the result and prize, the description, the team with each
+member's contribution, and the photographs. Any single record can be exported
+on its own from here - which is what someone needs when they are sending one
+student's achievement rather than a department listing.
 
-    PDF     built with the `pdf` package: department header, the filters that
-            were applied, a table, and totals.
-    Excel   built with `excel`: one row per request, a header row, column
-            widths set so nothing is truncated.
-    Word    a hand-built OOXML package (document.xml + the relationship and
-            content-type parts) zipped with `archive` into a real .docx. There
-            is no Word library for Dart; this is why `archive` is a dependency.
+11.2 EXPORTING
+--------------
+Export as -> PDF, Word or Excel. With filters applied the export is what is on
+screen; with none it is the whole list.
 
-Exports are written to the app's documents directory via path_provider, then
-either opened with open_filex or shared with share_plus (Share.shareXFiles).
-The file name carries the date, so yesterday's export is not overwritten.
+What goes in: student name, register number, year and section, event, dates
+and duration, project, result and prize, description, team members, each
+member's contribution, and the photographs. What does not: approval remarks,
+who approved when, workflow states. Those belong to the request screens, not
+to a record of achievement.
+
+    PDF     one block per record with the photographs embedded.
+    Word    a hand-built OOXML package - document.xml, the relationship and
+            content-type parts, and word/media for the images, zipped with
+            `archive` into a real .docx. Pictures are inline drawings sized to
+            3 inches wide, with the aspect ratio read from the image itself so
+            nothing is stretched. There is no Word library for Dart; this is
+            why `archive` is a dependency.
+    Excel   one row per record. A spreadsheet cannot hold the pictures, so the
+            photographs are listed by name and the sheet says where to find
+            them.
+
+The photographs live in a private bucket, so each one is a signed-URL fetch
+before it can go into a document. Gathering is therefore a separate, reported
+step - the tab shows "Preparing 4 of 12" rather than freezing behind a
+spinner - and a photo that will not download is skipped rather than losing the
+whole report. A department-wide export stops fetching after 60 images and
+names the rest instead.
+
+Exports are written to Downloads on Android (the app's documents directory
+elsewhere), then opened with open_filex or shared with share_plus. The file
+name carries the timestamp, so yesterday's export is not overwritten.
 
 
 ================================================================================
@@ -644,12 +704,13 @@ Row level security is enabled on every table with no permissive policies at
 all. The API connects as the service role and does its own authorization, so a
 leaked anon key reads nothing.
 
-Triggers enforce, independently of any application code:
+Triggers and constraints enforce, independently of any application code:
   - the HOD cannot decide before the advisor,
   - an advisor cannot decide twice,
   - a closed request cannot change again,
   - a result or an attachment requires an approved OD,
   - a win must name a prize,
+  - an OD's last day cannot precede its first, and it cannot run past 30 days,
   - references are OD-<year>-<counter>, unique and gapless per year.
 
 Files live in the private `od-files` bucket: 10 MB cap, MIME allowlist of
