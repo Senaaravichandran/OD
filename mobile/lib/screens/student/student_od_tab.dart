@@ -5,6 +5,7 @@ import '../../models/user.dart';
 import '../../services/od_service.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
+import 'attachments_sheet.dart';
 import 'new_od_sheet.dart';
 import 'od_card.dart';
 import 'result_sheet.dart';
@@ -56,6 +57,15 @@ class _StudentOdTabState extends State<StudentOdTab> {
     }
   }
 
+  Future<void> _openAttachments(ODRequest request) async {
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AttachmentsSheet(request: request),
+    );
+  }
+
   Future<void> _submitResult(ODRequest request) async {
     final done = await showModalBottomSheet<bool>(
       context: context,
@@ -93,6 +103,7 @@ class _StudentOdTabState extends State<StudentOdTab> {
                   request: r,
                   showProgress: false,
                   onSubmitResult: () => _submitResult(r),
+                  onAttachments: () => _openAttachments(r),
                 ),
               const SizedBox(height: 12),
             ],
@@ -121,7 +132,12 @@ class _StudentOdTabState extends State<StudentOdTab> {
                 ),
               )
             else
-              for (final r in active) OdCard(request: r),
+              for (final r in active)
+                OdCard(
+                  request: r,
+                  onSubmitResult: r.isApproved ? () => _submitResult(r) : null,
+                  onAttachments: r.isApproved ? () => _openAttachments(r) : null,
+                ),
           ],
         ),
       ),

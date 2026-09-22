@@ -14,6 +14,10 @@ import {
 } from '@/lib/api-core';
 import { audit, one, query, transaction } from '@/lib/db';
 import { sendPush } from '@/lib/firebase-admin';
+import {
+  ALLOWED_MIME, MAX_BYTES, deleteObject, objectKeyFor, signedUrl,
+  storageConfigured, uploadObject,
+} from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -551,6 +555,135 @@ async function markNotificationsRead(auth) {
 }
 
 // ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+/// Attaches a certificate or photo to an OD.
+///
+/// The bytes arrive base64 encoded, already compressed by the app. They are
+/// checked again here - a client can claim anything - and the caller must own
+/// the request and it must be approved, so a file cannot be attached to
+/// someone else's OD, or to one that was never sanctioned.
+async function uploadFile(auth, p) {
+  requireRole(auth, 'STUDENT');
+  if (!storageConfigured()) {
+    throw new HttpError(503, 'File uploads are not configured on the server yet.');
+  }
+
+  const req = await requestForActor(auth, p.reqId ?? p.requestId);
+  if (req.status !== 'APPROVED') {
+    throw new HttpError(409, 'Files can be attached only after the OD is approved.');
+  }
+
+  const kind = clean(p.kind).toUpperCase();
+  if (!['CERTIFICATE', 'WINNING_PHOTO', 'EVENT_PHOTO', 'SUPPORTING_DOCUMENT'].includes(kind)) {
+    throw new HttpError(400, 'Unknown file type.');
+  }
+
+  const mimeType = clean(p.mimeType).toLowerCase();
+  if (!ALLOWED_MIME.includes(mimeType)) {
+    throw new HttpError(400, 'Only JPEG, PNG, WebP images or PDF files can be uploaded.');
+  }
+
+  const base64 = String(p.data || '').replace(/^data:[^;]+;base64,/, '');
+  if (!base64) throw new HttpError(400, 'No file contents were sent.');
+
+  let bytes;
+  try {
+    bytes = Buffer.from(base64, 'base64');
+  } catch {
+    throw new HttpError(400, 'The file could not be read.');
+  }
+  if (bytes.length === 0) throw new HttpError(400, 'The file is empty.');
+  if (bytes.length > MAX_BYTES) {
+    throw new HttpError(413, 'That file is larger than 10 MB even after compression.');
+  }
+
+  const result = await one('select id from od_results where od_request_id = $1', [req.id]);
+  const objectKey = objectKeyFor({ odRequestId: req.id, kind, mimeType });
+  await uploadObject({ objectKey, bytes, mimeType });
+
+  let row;
+  try {
+    row = await one(
+      `insert into result_files (od_result_id, od_request_id, kind, object_key,
+                                 file_name, mime_type, size_bytes, uploaded_by)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
+       returning id, kind, object_key, file_name, mime_type, size_bytes`,
+      [result?.id || null, req.id, kind, objectKey,
+       text(p.fileName, 'File name', 120), mimeType, bytes.length, auth.userId]
+    );
+  } catch (err) {
+    // Do not leave an orphan in storage if the row could not be written.
+    await deleteObject(objectKey);
+    throw err;
+  }
+
+  await audit(null, {
+    actorUserId: auth.userId, actorEmail: auth.email, actorRole: 'STUDENT',
+    action: 'FILE_UPLOADED', entityType: 'od_request', entityId: req.id,
+    details: { kind, fileName: row.file_name, sizeBytes: bytes.length },
+  });
+
+  return {
+    success: true,
+    file: {
+      id: row.id,
+      kind: row.kind,
+      objectKey: row.object_key,
+      fileName: row.file_name,
+      mimeType: row.mime_type,
+      sizeBytes: Number(row.size_bytes),
+    },
+  };
+}
+
+/// A short-lived URL for viewing one attached file.
+///
+/// The caller must be allowed to see the request it belongs to, which is the
+/// same check used everywhere else: a student sees their own, an advisor their
+/// class's, the HOD the department's.
+async function fileUrl(auth, p) {
+  if (!storageConfigured()) {
+    throw new HttpError(503, 'File storage is not configured on the server yet.');
+  }
+  const file = await one(
+    'select id, od_request_id, object_key, file_name, mime_type from result_files where id = $1',
+    [clean(p.fileId)]
+  );
+  if (!file) throw new HttpError(404, 'File not found.');
+
+  await requestForActor(auth, file.od_request_id);
+
+  return {
+    success: true,
+    url: await signedUrl(file.object_key),
+    fileName: file.file_name,
+    mimeType: file.mime_type,
+    expiresInSeconds: 300,
+  };
+}
+
+/// Removes a file the student attached.
+async function deleteFile(auth, p) {
+  requireRole(auth, 'STUDENT');
+  const file = await one(
+    'select id, od_request_id, object_key from result_files where id = $1',
+    [clean(p.fileId)]
+  );
+  if (!file) throw new HttpError(404, 'File not found.');
+  await requestForActor(auth, file.od_request_id);
+
+  await query('delete from result_files where id = $1', [file.id]);
+  await deleteObject(file.object_key);
+  await audit(null, {
+    actorUserId: auth.userId, actorEmail: auth.email, actorRole: 'STUDENT',
+    action: 'FILE_DELETED', entityType: 'od_request', entityId: file.od_request_id,
+  });
+  return { success: true };
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -591,6 +724,9 @@ export async function POST(req) {
       case 'SUBMIT_RESULT':    return json(await submitResult(auth, p));
       case 'REGISTER_DEVICE':  return json(await registerDevice(auth, p));
       case 'MARK_READ':        return json(await markNotificationsRead(auth));
+      case 'UPLOAD_FILE':      return json(await uploadFile(auth, p));
+      case 'FILE_URL':         return json(await fileUrl(auth, p));
+      case 'DELETE_FILE':      return json(await deleteFile(auth, p));
       default:
         return json({ success: false, error: 'Unknown action.' }, 400);
     }

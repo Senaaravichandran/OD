@@ -3,18 +3,19 @@
 // Web portal for the SMVEC OD system. It talks to the same /api/mobile backend
 // as the Flutter app, so logins and OD data are shared between web and mobile.
 //
-// Clerk is the only way in. Clerk verifies the college email address (its own
-// emails, so the app sends none), and the portal then trades the Clerk session
-// token for an app session token through CLERK_LOGIN. The app token is held in
-// React state only - Clerk already persists the real session, so there is
-// nothing to keep in localStorage.
+// Sign-in is Firebase, the same identity the Android app uses, so a student
+// who registers on one sees their data on the other. The portal holds no
+// session of its own: every call carries a fresh Firebase ID token and the
+// server decides what the caller may do.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { SignIn, useAuth } from '@clerk/nextjs';
+import {
+  describeAuthError, firebaseReady, idToken, signInWithGoogle, signOut, watchAuth,
+} from '@/lib/firebase-client';
 import styles from './app.module.css';
 
-const API = '/api/mobile';
+const API = '/api/v2';
 const DOMAIN = '@smvec.ac.in';
 const YEARS = [1, 2, 3, 4];
 const SECTIONS = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -29,22 +30,41 @@ const STATUS = {
   REJECTED_HOD: { label: 'Rejected by HOD', tone: 'rejected' },
 };
 
-async function api(action, payload = {}, token) {
+/// One POST per call. The Firebase token is fetched here rather than passed
+/// in, and an expired one is re-minted and retried once - a session that aged
+/// out in another tab should not look like a failure.
+async function api(action, payload = {}, { authenticated = true, retried = false } = {}) {
+  let token = null;
+  if (authenticated) {
+    token = await idToken(retried);
+    if (!token) {
+      throw Object.assign(new Error('You are not signed in. Please sign in again.'), { status: 401 });
+    }
+  }
+
   let res;
   try {
     res = await fetch(API, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ action, payload }),
     });
   } catch {
     throw Object.assign(new Error('Could not reach the server. Check your connection.'), { status: 0 });
   }
+
   let data;
   try {
     data = await res.json();
   } catch {
     throw Object.assign(new Error(`Unexpected server response (${res.status}).`), { status: res.status });
+  }
+
+  if (res.status === 401 && authenticated && !retried) {
+    return api(action, payload, { authenticated, retried: true });
   }
   if (!res.ok || data.success !== true) {
     throw Object.assign(new Error(data.error || 'Something went wrong.'), { status: res.status });
@@ -65,48 +85,54 @@ const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { day: '2-
 // ---------------------------------------------------------------------------
 
 export default function PortalPage() {
-  const { isLoaded, isSignedIn, getToken, signOut } = useAuth();
+  // Read from the build-time config, so it is settled before the first paint
+  // and there is nothing to discover in an effect.
+  const configured = firebaseReady();
 
-  // null = not exchanged yet. Once set, either `session` or `pending` is filled.
+  const [firebaseUser, setFirebaseUser] = useState(configured ? undefined : null);
   const [session, setSession] = useState(null);
-  const [pending, setPending] = useState(null); // { email, regToken } for a new profile
+  const [pending, setPending] = useState(null); // { email, name } for a new profile
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(true);
+  const [busy, setBusy] = useState(false);
 
-  const signOutEverywhere = useCallback(() => {
-    setSession(null);
-    setPending(null);
-    signOut();
-  }, [signOut]);
-
-  // Trade the Clerk session for an app session as soon as Clerk is ready.
+  // Firebase tells us whether anyone is signed in, including after a reload.
+  // Signing out clears the profile here rather than in a second effect, so the
+  // two never disagree for a render.
   useEffect(() => {
-    if (!isLoaded) return undefined;
+    if (!configured) return undefined;
+    return watchAuth((user) => {
+      setFirebaseUser(user);
+      if (!user) {
+        setSession(null);
+        setPending(null);
+      }
+    });
+  }, [configured]);
+
+  // Once Firebase has a user, ask the server who they are.
+  useEffect(() => {
+    if (!firebaseUser) return undefined;
+
     let cancelled = false;
     (async () => {
-      if (!isSignedIn) {
-        if (!cancelled) {
-          setSession(null);
-          setPending(null);
-          setBusy(false);
-        }
-        return;
-      }
       setBusy(true);
       try {
-        const clerkToken = await getToken();
-        const res = await api('CLERK_LOGIN', {}, clerkToken);
+        const res = await api('SESSION');
         if (cancelled) return;
         if (res.needsRegistration) {
-          setPending({ email: res.email, regToken: res.regToken });
+          setPending({ email: res.email || '', name: res.name || '' });
           setSession(null);
         } else {
-          setSession({ token: res.token, user: res.user });
+          setSession({ user: res.user });
           setPending(null);
         }
         setError('');
       } catch (err) {
-        if (!cancelled) setError(err.message);
+        if (cancelled) return;
+        // The server refused this account - wrong domain, or disabled. Signing
+        // out is the only way forward, so make that the offered action.
+        setError(err.message);
+        await signOut().catch(() => {});
       } finally {
         if (!cancelled) setBusy(false);
       }
@@ -114,11 +140,18 @@ export default function PortalPage() {
     return () => {
       cancelled = true;
     };
-  }, [isLoaded, isSignedIn, getToken]);
+  }, [firebaseUser]);
+
+  const onLogout = useCallback(async () => {
+    await signOut().catch(() => {});
+    setSession(null);
+    setPending(null);
+    setError('');
+  }, []);
 
   const onUserUpdate = (user) => setSession((s) => (s ? { ...s, user } : s));
 
-  if (!isLoaded || busy) {
+  if (firebaseUser === undefined || busy) {
     return (
       <div className={styles.appContainer}>
         <div className={styles.authContainer}>
@@ -130,16 +163,22 @@ export default function PortalPage() {
     );
   }
 
-  if (!isSignedIn) return <SignInView />;
+  if (!firebaseUser) {
+    return (
+      <SignInView
+        error={configured ? error : 'Sign-in is not set up for this site yet. Please use the Android app, or contact the department.'}
+        disabled={!configured}
+      />
+    );
+  }
 
-  // Signed in with Clerk but the server refused (wrong domain, unverified, …).
   if (error && !session && !pending) {
     return (
       <div className={styles.appContainer}>
         <div className={styles.authContainer}>
           <div className={styles.authCard}>
             <ErrorBox text={error} />
-            <button type="button" className={styles.dangerBtn} onClick={signOutEverywhere}>
+            <button type="button" className={styles.dangerBtn} onClick={onLogout}>
               Sign out and try another account
             </button>
           </div>
@@ -152,25 +191,42 @@ export default function PortalPage() {
     return (
       <RegisterView
         email={pending.email}
-        regToken={pending.regToken}
-        onDone={(s) => {
-          setSession(s);
+        suggestedName={pending.name}
+        onDone={(user) => {
+          setSession({ user });
           setPending(null);
         }}
-        onCancel={signOutEverywhere}
+        onCancel={onLogout}
       />
     );
   }
 
-  if (!session) return <SignInView />;
-  return <Dashboard session={session} onLogout={signOutEverywhere} onUserUpdate={onUserUpdate} />;
+  if (!session) return <SignInView error={error} />;
+  return <Dashboard session={session} onLogout={onLogout} onUserUpdate={onUserUpdate} />;
 }
 
 // ---------------------------------------------------------------------------
 // Sign in (handled entirely by Clerk)
 // ---------------------------------------------------------------------------
 
-function SignInView() {
+function SignInView({ error, disabled = false }) {
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState('');
+
+  const google = async () => {
+    setBusy(true);
+    setLocalError('');
+    try {
+      await signInWithGoogle();
+      // The auth listener in PortalPage takes over from here.
+    } catch (err) {
+      const message = describeAuthError(err);
+      if (message) setLocalError(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className={styles.appContainer}>
       <div className={styles.authContainer}>
@@ -178,12 +234,26 @@ function SignInView() {
           <div className={styles.authHead}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/college_logo.png" alt="SMVEC" className={styles.authLogo} />
-            <h1 className={styles.authTitle}>SMVEC OD Portal</h1>
+            <h1 className={styles.authTitle}>SMVEC-IT OD Portal</h1>
             <p className={styles.authSubtitle}>
               Department of Information Technology. Sign in with your official {DOMAIN} account.
             </p>
           </div>
-          <SignIn routing="hash" />
+
+          <button
+            type="button"
+            className={styles.primaryBtn}
+            onClick={google}
+            disabled={busy || disabled}
+          >
+            {busy ? 'Opening Google…' : 'Continue with Google'}
+          </button>
+
+          {(localError || error) && <ErrorBox text={localError || error} />}
+
+          <p className={styles.muted}>
+            Staff can also sign in on the Android app with their department password.
+          </p>
           <p className={styles.muted}>
             <Link href="/">Back to the main site</Link>
           </p>
@@ -197,9 +267,9 @@ function SignInView() {
 // First-time profile
 // ---------------------------------------------------------------------------
 
-function RegisterView({ email, regToken, onDone, onCancel }) {
+function RegisterView({ email, suggestedName, onDone, onCancel }) {
   const [role, setRole] = useState('STUDENT');
-  const [form, setForm] = useState({ name: '', rollNumber: '', year: '', section: '', batch: currentBatch() });
+  const [form, setForm] = useState({ name: suggestedName || '', rollNumber: '', year: '', section: '', batch: currentBatch() });
   const [staffCode, setStaffCode] = useState('');
   const [classes, setClasses] = useState(null);
   const [error, setError] = useState('');
@@ -225,7 +295,7 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
   // Needed before the student has a session, so ADVISORS is public.
   useEffect(() => {
     let cancelled = false;
-    api('ADVISORS')
+    api('CLASSES', {}, { authenticated: false })
       .then((res) => !cancelled && setClasses(res.classes || []))
       .catch(() => !cancelled && setClasses([]));
     return () => {
@@ -238,15 +308,15 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
     setBusy(true);
     setError('');
     try {
-      const payload = { role, regToken, name: form.name, year: form.year, section: form.section };
+      const payload = { role, name: form.name, year: form.year, section: form.section };
       if (role === 'STUDENT') {
-        payload.rollNumber = form.rollNumber;
+        payload.registerNumber = form.rollNumber;
       } else {
         payload.batch = form.batch;
         payload.staffCode = staffCode;
       }
       const res = await api('REGISTER', payload);
-      onDone({ token: res.token, user: res.user });
+      onDone(res.user);
     } catch (err) {
       setError(err.message);
       setBusy(false);
@@ -359,7 +429,7 @@ function RegisterView({ email, regToken, onDone, onCancel }) {
 }
 
 function Dashboard({ session, onLogout, onUserUpdate }) {
-  const { token, user } = session;
+  const { user } = session;
   const [data, setData] = useState({ requests: [], notifications: [], auditLogs: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -369,13 +439,13 @@ function Dashboard({ session, onLogout, onUserUpdate }) {
   const call = useCallback(
     async (action, payload) => {
       try {
-        return await api(action, payload, token);
+        return await api(action, payload);
       } catch (err) {
         if (err.status === 401) onLogout();
         throw err;
       }
     },
-    [token, onLogout]
+    [onLogout]
   );
 
   const refresh = useCallback(
@@ -644,7 +714,7 @@ function ResultModal({ ctx, request, onClose }) {
     setBusy(true);
     setError('');
     try {
-      const res = await call('SUBMIT_RESULT', { reqId: request.id, status, projectName, description });
+      const res = await call('SUBMIT_RESULT', { reqId: request.id, status, projectName, description, prize });
       upsert(res.request);
       setToast('Result saved.');
       onClose();

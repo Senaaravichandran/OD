@@ -4,6 +4,7 @@ import '../../models/od_request.dart';
 import '../../services/od_service.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
+import 'attachments_sheet.dart';
 import 'od_card.dart';
 
 /// Tab 2: everything this student has ever raised, with filters.
@@ -128,8 +129,18 @@ class _StudentHistoryTabState extends State<StudentHistoryTab> {
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                     itemCount: list.length,
-                    itemBuilder: (_, i) =>
-                        OdCard(request: list[i], showProgress: false),
+                    itemBuilder: (_, i) => OdCard(
+                      request: list[i],
+                      showProgress: false,
+                      onAttachments: list[i].isApproved
+                          ? () => showModalBottomSheet(
+                                context: context,
+                                isScrollControlled: true,
+                                backgroundColor: Colors.transparent,
+                                builder: (_) => AttachmentsSheet(request: list[i]),
+                              )
+                          : null,
+                    ),
                   ),
           ),
         ],

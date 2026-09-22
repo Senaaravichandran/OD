@@ -11,11 +11,13 @@ class OdCard extends StatelessWidget {
     super.key,
     required this.request,
     this.onSubmitResult,
+    this.onAttachments,
     this.showProgress = true,
   });
 
   final ODRequest request;
   final VoidCallback? onSubmitResult;
+  final VoidCallback? onAttachments;
   final bool showProgress;
 
   @override
@@ -169,15 +171,32 @@ class OdCard extends StatelessWidget {
 
             // Only offered once the HOD has sanctioned it - the server refuses
             // a result before that, so showing it earlier would be a lie.
-            if (r.canSubmitResult && !r.hasResult && onSubmitResult != null) ...[
+            if (r.isApproved && (onSubmitResult != null || onAttachments != null)) ...[
               const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: onSubmitResult,
-                  icon: const Icon(Icons.emoji_events_outlined, size: 18),
-                  label: const Text('Submit result'),
-                ),
+              Row(
+                children: [
+                  if (!r.hasResult && onSubmitResult != null)
+                    Expanded(
+                      flex: 2,
+                      child: FilledButton.icon(
+                        onPressed: onSubmitResult,
+                        icon: const Icon(Icons.emoji_events_outlined, size: 18),
+                        label: const Text('Submit result'),
+                      ),
+                    ),
+                  if (!r.hasResult && onSubmitResult != null && onAttachments != null)
+                    const SizedBox(width: 10),
+                  if (onAttachments != null)
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: onAttachments,
+                        icon: const Icon(Icons.attach_file_rounded, size: 17),
+                        label: Text(
+                          r.files.isEmpty ? 'Attach' : 'Files (${r.files.length})',
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ],
           ],

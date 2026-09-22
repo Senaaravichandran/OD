@@ -5,6 +5,7 @@ import '../../services/api_client.dart';
 import '../../services/od_service.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
+import '../shared/file_viewer.dart';
 
 /// Review one OD request and decide on it.
 ///
@@ -201,6 +202,75 @@ class _ReviewSheetState extends State<ReviewSheet> {
                       ),
                     ),
                   ),
+
+                  if (r.hasResult) ...[
+                    const SizedBox(height: 16),
+                    const SectionHeader(title: 'Result'),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                        child: Column(
+                          children: [
+                            DetailRow(label: 'Outcome', value: r.resultDisplay),
+                            if (r.resultProjectName != null)
+                              DetailRow(label: 'Project', value: r.resultProjectName!),
+                            if (r.resultPrize != null)
+                              DetailRow(label: 'Prize', value: r.resultPrize!),
+                            if (r.resultPrizeDetails != null &&
+                                r.resultPrizeDetails!.isNotEmpty)
+                              DetailRow(label: 'Prize details', value: r.resultPrizeDetails!),
+                            if (r.resultDescription != null &&
+                                r.resultDescription!.isNotEmpty)
+                              DetailRow(label: 'Description', value: r.resultDescription!),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+
+                  // Certificates and prize photos the student attached. Opening
+                  // one fetches a short-lived signed URL; nothing here is a
+                  // permanent public link.
+                  if (r.files.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    SectionHeader(
+                      title: 'Evidence',
+                      trailing: Text(
+                        '${r.files.length} file${r.files.length == 1 ? '' : 's'}',
+                        style: const TextStyle(fontSize: 12.5, color: AppTheme.muted),
+                      ),
+                    ),
+                    for (final f in r.files)
+                      Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(
+                            f.isImage
+                                ? Icons.image_outlined
+                                : Icons.picture_as_pdf_outlined,
+                            size: 20,
+                            color: AppTheme.primary,
+                          ),
+                          title: Text(
+                            f.kindLabel,
+                            style: const TextStyle(
+                                fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            '${f.fileName} · ${f.sizeLabel}',
+                            style: const TextStyle(fontSize: 11.5),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => FileViewer(file: f)),
+                          ),
+                        ),
+                      ),
+                  ],
 
                   if (r.advisorRemarks != null && r.advisorRemarks!.isNotEmpty) ...[
                     const SizedBox(height: 16),
