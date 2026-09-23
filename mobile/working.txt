@@ -9,7 +9,7 @@ where the app talks to them.
 
 App id ........... edu.smvec.it.smvec_od
 App name ......... SMVEC-IT OD
-Version .......... 3.2.0+11  (versionName 3.2.0, versionCode 11)
+Version .......... 3.2.1+12  (versionName 3.2.1, versionCode 12)
 Dart package ..... smvec_od
 Purpose .......... Students raise On-Duty (OD) requests for events. Their class
                    advisor recommends, the HOD sanctions, the student is pushed
@@ -52,7 +52,7 @@ Linting ................ flutter_lints ^5.0.0 (analysis_options.yaml)
 Build system (Android).. Gradle with Kotlin DSL (build.gradle.kts)
 Google services ........ com.google.gms.google-services 4.4.2
 Java / Kotlin .......... Java 11 target, core library desugaring ON
-Total Dart code ........ 43 files, ~9,900 lines under lib/
+Total Dart code ........ 44 files, ~9,900 lines under lib/
 Total packages ......... 125 resolved packages (20 direct, rest transitive)
 State management ....... none. A ChangeNotifier singleton (ODService) plus
                          setState. No Provider, Riverpod, BLoC or GetX.
@@ -134,6 +134,7 @@ lib/
     upload_service.dart            pick, compress, upload
     report_export.dart             PDF, Excel, Word
   utils/validators.dart            form validators
+  widgets/role_shell.dart          the frame all three roles sit in
   widgets/common.dart              StatusBadge, StatCard, EmptyState,
                                    SkeletonList, ErrorBanner, DetailRow,
                                    SectionHeader, confirm(), showToast(),
@@ -488,6 +489,19 @@ returned and calls MARK_READ.
 10. THE THREE APPS INSIDE THE APP
 ================================================================================
 
+Every role's application is the same frame, RoleShell, filled with a list of
+ShellTab - title, navigation label, icons, body, optional badge, all in one
+value. They used to be three parallel lists kept in step by hand, and they
+drifted: the Reports tab was added to the student app without a fourth title,
+so opening Profile read past the end of the titles list. In a release build an
+exception thrown during build renders Flutter's error widget, which is a plain
+grey rectangle - the whole screen went blank and said nothing. One list per
+tab makes that mistake impossible, and test/role_shell_test.dart walks every
+tab of shells from two up to six.
+
+One tab opens another by name - a dashboard asks for 'Requests', not for tab 1
+- so reordering the bar cannot send it somewhere else.
+
 10.1 STUDENT  (student_shell.dart - 4 tabs)
 -------------------------------------------
     OD Requests   active requests, each with a progress stepper showing where
@@ -670,9 +684,15 @@ Pick an ASCII-only string to test with.
 -----------------------------
 `flutter test` fails in this checkout, and not because of the code: the
 apostrophe in the path `D:\Project's\...` breaks Flutter's generated test
-harness, which injects the path into a single-quoted Dart string. The tests
-pass from a path without an apostrophe. Use `flutter analyze` here, which is
-unaffected.
+harness, which injects the path into a single-quoted Dart string.
+
+To actually run the tests, copy lib/, test/, assets/ and the pubspec files to
+a path without an apostrophe and run `flutter test` there:
+
+    cp -r lib test assets pubspec.yaml pubspec.lock analysis_options.yaml /tmp/odtest
+    cd /tmp/odtest && flutter test
+
+`flutter analyze` works in place and is unaffected.
 
 
 ================================================================================

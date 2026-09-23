@@ -641,7 +641,6 @@ function StudentView({ data, ctx, tab }) {
   const reqs = data.requests;
   const count = (fn) => reqs.filter(fn).length;
 
-  const active = reqs.filter((r) => !r.isClosed && r.status !== 'APPROVED' && !String(r.status).startsWith('REJECTED'));
   const open = reqs.filter((r) => r.status === 'PENDING_ADVISOR' || r.status === 'APPROVED_BY_ADVISOR');
   const closed = reqs.filter((r) => r.status === 'APPROVED' || String(r.status).startsWith('REJECTED'));
   const awaitingResult = reqs.filter((r) => r.status === 'APPROVED' && r.resultStatus === 'PENDING');
@@ -749,10 +748,6 @@ function StudentView({ data, ctx, tab }) {
         <div className={styles.list}>
           {open.map((r) => <RequestCard key={r.id} r={r} showStepper />)}
         </div>
-      )}
-
-      {active.length === 0 && open.length === 0 && reqs.length === 0 && (
-        <Empty text="You haven't submitted any OD requests yet." />
       )}
 
       {modals}
