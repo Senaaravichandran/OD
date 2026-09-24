@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
@@ -136,18 +138,49 @@ class _AppGateState extends State<AppGate> {
 
   /// On launch: a staff password session is restored from the device, and a
   /// Firebase session is resumed by asking the server who we are.
+  ///
+  /// Nobody should have to sign in twice. Both routes keep a session on the
+  /// device, so the only thing this does is wait long enough to find it.
   Future<void> _boot() async {
     final staff = await SessionService.loadStaff();
     if (staff != null) {
+      // Open straight onto their own screen, then confirm with the server
+      // behind it. Waiting first would mean staring at the splash on a slow
+      // connection for a session we already have.
       await _adopt(staff);
       if (mounted) setState(() => _booting = false);
+      unawaited(_confirmStaffSession());
       return;
     }
 
-    if (AuthService.isSignedIn) {
+    // Waited for, not merely read: Firebase restores a saved session a moment
+    // after start-up, and asking too early makes a signed-in student look
+    // signed out.
+    if (await AuthService.restoreSession() != null) {
       await _exchangeFirebaseSession();
     }
     if (mounted) setState(() => _booting = false);
+  }
+
+  /// Checks a restored staff session and takes the renewed token with it.
+  ///
+  /// The server slides the expiry: a session that is getting on comes back
+  /// with a fresh token, so somebody who keeps using the app is never asked
+  /// for the password again. A session that has genuinely lapsed signs out.
+  Future<void> _confirmStaffSession() async {
+    try {
+      final res = await ApiClient.call('SESSION');
+      final renewed = res['token']?.toString();
+      final user = AppUser.fromJson(
+        res['user'] as Map<String, dynamic>,
+        staffToken: renewed ?? _user?.staffToken,
+      );
+      await _adopt(user);
+    } on ApiException catch (e) {
+      // Only an expired session is worth signing out for. A flat battery of a
+      // connection should not throw the person out of the app.
+      if (e.isAuthError) await _signOut();
+    }
   }
 
   /// Trades the current Firebase session for a profile.

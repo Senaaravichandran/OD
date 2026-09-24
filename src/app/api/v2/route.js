@@ -893,7 +893,13 @@ export async function POST(req) {
     const auth = await identify(req);
 
     switch (action) {
-      case 'SESSION':          return json(await session(auth));
+      case 'SESSION': {
+        const res = await session(auth);
+        // A staff session slides: whenever it is getting on, hand back a
+        // fresh token. The app saves it, so someone who keeps using the app
+        // never has to type the password again.
+        return json(auth.renewToken ? { ...res, token: signStaffToken(auth) } : res);
+      }
       case 'REGISTER':         return json(await registerStudent(auth, p));
       case 'CHANGE_CLASS':     return json(await changeClass(auth, p));
       case 'SYNC':             return json(await sync(auth, p));

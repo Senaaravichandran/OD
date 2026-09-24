@@ -11,9 +11,19 @@ import { verifyIdToken } from './firebase-admin';
 
 export const DOMAIN = '@smvec.ac.in';
 
-// Staff who sign in with a password have no Firebase account, so they get a
-// short HMAC-signed token instead. Students never use this path.
-const STAFF_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+// Staff who sign in with a password have no Firebase account, so they get an
+// HMAC-signed token instead. Students never use this path.
+//
+// Thirty days, and it slides: every call that carries a token close to the end
+// of its life gets a fresh one back, so somebody who opens the app each week
+// is never asked to sign in again, while a device left untouched for a month
+// stops working on its own. Twelve hours was the first guess and it meant the
+// HOD typed a password every single day.
+const STAFF_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/// Re-issue once the token is more than a third of the way through its life.
+/// Sooner would mint a new token on nearly every call for nothing.
+const STAFF_TOKEN_RENEW_AFTER_MS = 10 * 24 * 60 * 60 * 1000;
 
 function signingSecret() {
   const explicit = clean(process.env.AUTH_SECRET);
@@ -33,6 +43,15 @@ export function signStaffToken({ staffId, email, role }) {
   ).toString('base64url');
   const sig = crypto.createHmac('sha256', signingSecret()).update(body).digest('base64url');
   return `staff.${body}.${sig}`;
+}
+
+/// A token worth replacing: valid, but old enough that the holder should be
+/// given a fresh one before this one runs out.
+export function staffTokenNeedsRenewal(token) {
+  const data = readStaffToken(token);
+  if (!data?.x) return false;
+  const issuedAt = data.x - STAFF_TOKEN_TTL_MS;
+  return Date.now() - issuedAt > STAFF_TOKEN_RENEW_AFTER_MS;
 }
 
 function readStaffToken(token) {
@@ -105,6 +124,9 @@ export async function identify(req) {
       email: data.e,
       role: staff.is_hod ? 'HOD' : 'ADVISOR',
       name: staff.name,
+      // Set when the session is old enough to be worth replacing; SESSION
+      // hands the caller a fresh token so an active user is never signed out.
+      renewToken: staffTokenNeedsRenewal(token),
     };
   }
 

@@ -91,6 +91,10 @@ export default function PortalPage() {
     (async () => {
       try {
         const res = await api('SESSION');
+        // The server slides the expiry: a session that is getting on comes
+        // back with a fresh token, so somebody who keeps using the portal is
+        // never asked for the password again.
+        if (res.token) setStaffSession(res.token, res.user);
         if (!cancelled) setSession({ user: res.user });
       } catch {
         // The token has expired or been revoked; start again.

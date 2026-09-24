@@ -22,6 +22,28 @@ class AuthService {
   static bool get isSignedIn => _auth.currentUser != null;
   static Stream<User?> get changes => _auth.authStateChanges();
 
+  /// Who is signed in, once Firebase has finished looking.
+  ///
+  /// Firebase keeps the session on the device, but it restores it
+  /// asynchronously: reading currentUser in the moment after
+  /// Firebase.initializeApp() usually returns null even when somebody is
+  /// signed in. The app took that null at face value and sent everyone back to
+  /// the sign-in screen on every single launch. The first authStateChanges
+  /// event is what actually says, and it arrives as soon as the local read is
+  /// done - no network involved.
+  static Future<User?> restoreSession() async {
+    final already = _auth.currentUser;
+    if (already != null) return already;
+    try {
+      return await changes.first.timeout(const Duration(seconds: 8));
+    } catch (err) {
+      // A device that never answers should still reach the sign-in screen
+      // rather than hang on the splash.
+      debugPrint('could not restore the session: $err');
+      return _auth.currentUser;
+    }
+  }
+
   /// Google sign-in. Returns the signed-in user, or null if the person backed
   /// out of the account picker.
   static Future<User?> signInWithGoogle() async {
