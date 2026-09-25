@@ -654,6 +654,16 @@ function auditSentence(a) {
       return `${who} joined Year ${d.year} Section ${d.section}`;
     case 'CLASS_CHANGED':
       return `${who} moved to Year ${d.year} Section ${d.section}`;
+    case 'SIGNED_IN':
+      return d.method === 'Password'
+          ? `${who} signed in with their department password`
+          : d.method === 'Google, first time'
+              ? `${who} signed in for the first time`
+              : `${who} signed in with Google`;
+    case 'SIGNED_OUT':
+      return `${who} signed out`;
+    case 'PASSWORD_LOGIN':
+      return `${who} signed in with their department password`;
     case 'DEVICE_REGISTERED':
       return `${who} signed in on a new device`;
     default:
@@ -1026,6 +1036,20 @@ async function submitResult(auth, p) {
   return { success: true, request: (await hydrate(rows))[0] };
 }
 
+/// Records somebody leaving, and detaches the device so the next person to
+/// sign in on this phone does not get their notifications.
+async function signOut(auth) {
+  await query(
+    'update users set fcm_token = null where id = $1', [auth.userId]
+  );
+  await audit(null, {
+    actorUserId: auth.userId, actorEmail: auth.email, actorRole: auth.role,
+    action: 'SIGNED_OUT', entityType: 'user', entityId: auth.userId,
+    details: { name: auth.name },
+  });
+  return { success: true };
+}
+
 async function registerDevice(auth, p) {
   const token = clean(p.fcmToken);
   if (!token) throw new HttpError(400, 'No device token supplied.');
@@ -1189,11 +1213,9 @@ export async function POST(req) {
 
     // Staff password sign-in returns the same session shape as a Firebase one.
     if (action === 'PASSWORD_LOGIN') {
+      // passwordIdentify records the arrival itself, the same way the Google
+      // route does, so there is nothing to write here.
       const auth = await passwordIdentify({ email: p.email, password: p.password });
-      await audit(null, {
-        actorUserId: auth.userId, actorEmail: auth.email, actorRole: auth.role,
-        action: 'PASSWORD_LOGIN', entityType: 'user', entityId: auth.userId,
-      });
       // Staff have no Firebase account, so they carry a signed token instead.
       return json({ ...(await session(auth)), token: signStaffToken(auth) });
     }
@@ -1216,6 +1238,7 @@ export async function POST(req) {
       case 'HOD_DECIDE':       return json(await hodDecide(auth, p));
       case 'SUBMIT_RESULT':    return json(await submitResult(auth, p));
       case 'REGISTER_DEVICE':  return json(await registerDevice(auth, p));
+      case 'SIGN_OUT':         return json(await signOut(auth));
       case 'ADVISOR_ROSTER':   return json(await advisorRoster(auth));
       case 'ADVISOR_CREATE':   return json(await createAdvisor(auth, p));
       case 'ADVISOR_UPDATE':   return json(await updateAdvisor(auth, p));

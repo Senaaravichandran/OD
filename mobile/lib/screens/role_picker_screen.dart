@@ -8,9 +8,16 @@ import '../models/user.dart';
 /// actually allowed to do is decided by the server from their profile, never
 /// by which button they pressed here.
 class RolePickerScreen extends StatelessWidget {
-  const RolePickerScreen({super.key, required this.onPick});
+  const RolePickerScreen({super.key, required this.onPick, this.signedOutBecause});
 
   final void Function(UserRole role) onPick;
+
+  /// Why the last session ended, when it ended for a reason worth saying.
+  ///
+  /// Being returned to this screen with no explanation is exactly what made
+  /// the sign-in trouble so hard to pin down: every report was the same
+  /// sentence, and the app knew more than it was letting on.
+  final String? signedOutBecause;
 
   @override
   Widget build(BuildContext context) {
@@ -42,6 +49,46 @@ class RolePickerScreen extends StatelessWidget {
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.black54),
                 ),
+                if (signedOutBecause != null) ...[
+                  const SizedBox(height: 24),
+                  Container(
+                    padding: const EdgeInsets.all(13),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF7E6),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFE8B008)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.info_outline_rounded,
+                            size: 18, color: Color(0xFFB45309)),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'You were signed out',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w800,
+                                  color: Color(0xFFB45309),
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                signedOutBecause!,
+                                style: const TextStyle(
+                                    fontSize: 12.5, height: 1.4, color: Colors.black87),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 36),
                 const Text(
                   'Continue as',

@@ -155,6 +155,9 @@ export default function PortalPage() {
   }, [firebaseUser]);
 
   const onLogout = useCallback(async () => {
+    // Told to the server first, while there is still a session to tell it
+    // with. Best effort - nothing here depends on it arriving.
+    await api('SIGN_OUT').catch(() => {});
     clearStaffSession();
     await signOut().catch(() => {});
     setSession(null);

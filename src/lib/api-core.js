@@ -6,7 +6,7 @@
 
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { one, query } from './db';
+import { audit, one, query } from './db';
 import { verifyIdToken } from './firebase-admin';
 
 export const DOMAIN = '@smvec.ac.in';
@@ -100,6 +100,40 @@ export async function assertAllowedEmail(email) {
   throw new HttpError(403, `Only ${DOMAIN} accounts can use this app.`);
 }
 
+/// A new session is one that starts more than this long after the last call.
+/// Short enough that a genuine sign-in is always caught, long enough that a
+/// day's work does not fill the audit log with arrivals.
+const NEW_SESSION_AFTER_MS = 30 * 60 * 1000;
+
+/// Marks the person as here, and writes an arrival to the audit log when this
+/// is a new session rather than the next call of one already running.
+///
+/// identify() runs on every request, so the check matters: without it the
+/// audit log would be nothing but sign-ins.
+export async function noteSignIn({ userId, email, role, name, method }) {
+  const previous = await one(
+    `update users u
+        set last_login_at = now()
+       from users prev
+      where u.id = $1 and prev.id = u.id
+      returning prev.last_login_at as was`,
+    [userId]
+  );
+
+  const last = previous?.was ? new Date(previous.was).getTime() : 0;
+  if (Date.now() - last < NEW_SESSION_AFTER_MS) return;
+
+  await audit(null, {
+    actorUserId: userId,
+    actorEmail: email,
+    actorRole: role,
+    action: 'SIGNED_IN',
+    entityType: 'user',
+    entityId: userId,
+    details: { method, name },
+  });
+}
+
 /// Resolves the caller from a Firebase ID token, creating the user row on
 /// first sight. Returns the app-level identity used by every action.
 export async function identify(req) {
@@ -166,11 +200,18 @@ export async function identify(req) {
 
   if (staff) {
     await query(
-      `update users set firebase_uid = coalesce(firebase_uid, $1), last_login_at = now(),
+      `update users set firebase_uid = coalesce(firebase_uid, $1),
                         photo_url = coalesce($2, photo_url)
         where id = $3`,
       [decoded.uid, decoded.picture, staff.user_id]
     );
+    await noteSignIn({
+      userId: staff.user_id,
+      email,
+      role: staff.is_hod ? 'HOD' : 'ADVISOR',
+      name: staff.name,
+      method: 'Google',
+    });
     return {
       userId: staff.user_id,
       staffId: staff.staff_id,
@@ -186,21 +227,30 @@ export async function identify(req) {
   }
 
   let user = await one('select id, role, display_name from users where email = $1', [email]);
+  const firstVisit = !user;
   if (!user) {
     user = await one(
-      `insert into users (firebase_uid, email, role, display_name, photo_url, last_login_at)
-       values ($1, $2, 'STUDENT', $3, $4, now())
+      `insert into users (firebase_uid, email, role, display_name, photo_url)
+       values ($1, $2, 'STUDENT', $3, $4)
        returning id, role, display_name`,
       [decoded.uid, email, decoded.name || email.split('@')[0], decoded.picture]
     );
   } else {
     await query(
-      `update users set firebase_uid = coalesce(firebase_uid, $1), last_login_at = now(),
+      `update users set firebase_uid = coalesce(firebase_uid, $1),
                         photo_url = coalesce($2, photo_url)
         where id = $3`,
       [decoded.uid, decoded.picture, user.id]
     );
   }
+
+  await noteSignIn({
+    userId: user.id,
+    email,
+    role: 'STUDENT',
+    name: user.display_name,
+    method: firstVisit ? 'Google, first time' : 'Google',
+  });
 
   const student = await one(
     `select id, register_number, name, year, section, class_assignment_id, profile_completed
@@ -237,12 +287,20 @@ export async function passwordIdentify({ email, password }) {
   const ok = await bcrypt.compare(String(password || ''), staff.password_hash);
   if (!ok) throw wrong;
 
-  await query('update users set last_login_at = now() where id = $1', [staff.user_id]);
+  const role = staff.is_hod ? 'HOD' : 'ADVISOR';
+  await noteSignIn({
+    userId: staff.user_id,
+    email: e,
+    role,
+    name: staff.name,
+    method: 'Password',
+  });
+
   return {
     userId: staff.user_id,
     staffId: staff.staff_id,
     email: e,
-    role: staff.is_hod ? 'HOD' : 'ADVISOR',
+    role,
     name: staff.name,
   };
 }

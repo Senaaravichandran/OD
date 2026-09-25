@@ -22,6 +22,58 @@ class SessionService {
   static const _userKey = 'smvec_staff_user_v3';
   static const _tokenKey = 'smvec_staff_token_v3';
   static const _routeKey = 'smvec_signed_in_route_v1';
+  static const _studentKey = 'smvec_student_user_v1';
+  static const _signOutReasonKey = 'smvec_last_sign_out_reason_v1';
+
+  /// The student's profile from last time.
+  ///
+  /// Their session itself belongs to Firebase - this is only so the app can
+  /// open on their own screen while Firebase is still waking up, instead of
+  /// showing a sign-in page to somebody who is signed in. Nothing here grants
+  /// access: every call still carries a fresh Firebase token, and the server
+  /// decides.
+  static Future<void> saveStudent(AppUser user) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_studentKey, jsonEncode(user.toJson()));
+    } catch (_) {
+      // A device that refuses storage just means a slower start-up.
+    }
+  }
+
+  static Future<AppUser?> loadStudent() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_studentKey);
+      if (raw == null) return null;
+      return AppUser.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Why the last sign-out happened, kept so the sign-in screen can say.
+  ///
+  /// Being asked to sign in again with no explanation is the whole reason this
+  /// took four attempts to find: every report was the same sentence, and the
+  /// app knew more than it was saying.
+  static Future<void> rememberSignOutReason(String reason) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_signOutReasonKey, reason);
+    } catch (_) {}
+  }
+
+  static Future<String?> takeSignOutReason() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final reason = prefs.getString(_signOutReasonKey);
+      await prefs.remove(_signOutReasonKey);
+      return reason;
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// How the person got in last time: 'google' or 'staff'.
   static Future<void> rememberRoute(String route) async {
@@ -69,12 +121,15 @@ class SessionService {
     }
   }
 
+  /// Forgets who was signed in. The sign-out reason is deliberately left
+  /// behind, so the sign-in screen can still explain itself.
   static Future<void> clear() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_userKey);
       await prefs.remove(_tokenKey);
       await prefs.remove(_routeKey);
+      await prefs.remove(_studentKey);
     } catch (_) {}
   }
 }

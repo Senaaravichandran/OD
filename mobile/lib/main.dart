@@ -127,6 +127,7 @@ class _AppGateState extends State<AppGate> {
   bool _booting = true;
   bool _exchanging = false;
   String? _error;
+  String? _signOutReason;
   ({String email, String name})? _needsProfile;
 
   @override
@@ -142,6 +143,8 @@ class _AppGateState extends State<AppGate> {
   /// Nobody should have to sign in twice. Both routes keep a session on the
   /// device, so the only thing this does is wait long enough to find it.
   Future<void> _boot() async {
+    _signOutReason = await SessionService.takeSignOutReason();
+
     final staff = await SessionService.loadStaff();
     if (staff != null) {
       // Open straight onto their own screen, then confirm with the server
@@ -153,21 +156,61 @@ class _AppGateState extends State<AppGate> {
       return;
     }
 
-    // Our own record of the last way in decides how patient to be. If it says
-    // somebody signed in with Google, wait for Firebase to produce them rather
-    // than believing the premature null it offers on a cold start.
-    final expectUser =
-        await SessionService.lastRoute() == SignInRoute.google.name;
-    final restored = await AuthService.restoreSession(expectUser: expectUser);
-
-    if (restored != null) {
-      await _exchangeFirebaseSession();
-    } else if (expectUser) {
-      // We were told to expect somebody and nobody came. The credentials are
-      // gone for good, so stop expecting them next time.
-      await SessionService.clear();
+    // Same for a student. Their session belongs to Firebase, but the app knows
+    // perfectly well who was using it last, and showing a sign-in page to
+    // somebody who is signed in - because Firebase had not finished waking up -
+    // is the bug that would not die. So open on them, and check behind.
+    final student = await SessionService.loadStudent();
+    if (student != null) {
+      await _adopt(student, route: SignInRoute.google, remember: false);
+      if (mounted) setState(() => _booting = false);
+      unawaited(_confirmStudentSession());
+      return;
     }
+
+    // Nobody remembered. Ask Firebase once, in case this is an app that was
+    // signed in before this version existed, and be done.
+    final restored = await AuthService.restoreSession(expectUser: false);
+    if (restored != null) await _exchangeFirebaseSession();
     if (mounted) setState(() => _booting = false);
+  }
+
+  /// Confirms a restored student session behind the screen they are already
+  /// looking at.
+  ///
+  /// Firebase is given time to produce its user here, where waiting costs
+  /// nothing, rather than at start-up where it used to hold up the whole app
+  /// and then get the answer wrong anyway.
+  Future<void> _confirmStudentSession() async {
+    final user = await AuthService.restoreSession(expectUser: true);
+    if (user == null) {
+      // Firebase has genuinely lost them - reinstalled, cleared, or the
+      // account was removed. Nothing to refresh against.
+      await _signOutBecause('Your sign-in was no longer stored on this device.');
+      return;
+    }
+
+    try {
+      final res = await ApiClient.call('SESSION');
+      if (res['needsRegistration'] == true) {
+        if (!mounted) return;
+        setState(() {
+          _needsProfile = (
+            email: res['email']?.toString() ?? '',
+            name: res['name']?.toString() ?? '',
+          );
+          _user = null;
+        });
+        return;
+      }
+      final profile = res['user'];
+      if (profile is! Map<String, dynamic>) return;
+      await _adopt(AppUser.fromJson(profile), route: SignInRoute.google);
+    } on ApiException catch (e) {
+      // A refusal ends it. Anything else was only us failing to ask, and the
+      // screen they are on is still theirs.
+      if (e.isRefused) await _signOutBecause(e.message);
+    }
   }
 
   /// Checks a restored staff session and takes the renewed token with it.
@@ -197,7 +240,7 @@ class _AppGateState extends State<AppGate> {
     } on ApiException catch (e) {
       // Only a refused session is worth signing out for. A flat battery of a
       // connection should not throw somebody out of the app.
-      if (e.isRefused) await _signOut();
+      if (e.isRefused) await _signOutBecause(e.message);
     }
   }
 
@@ -232,10 +275,7 @@ class _AppGateState extends State<AppGate> {
       // connection says nothing about it, and signing out for those is what
       // made people sign in again every time they reopened the app on a
       // waking radio.
-      if (e.isRefused) {
-        await AuthService.signOut();
-        await SessionService.clear();
-      }
+      if (e.isRefused) await _signOutBecause(e.message);
     } finally {
       if (mounted) setState(() => _exchanging = false);
     }
@@ -260,22 +300,28 @@ class _AppGateState extends State<AppGate> {
     await _boot();
   }
 
-  Future<void> _adopt(AppUser user, {required SignInRoute route}) async {
+  Future<void> _adopt(
+    AppUser user, {
+    required SignInRoute route,
+    bool remember = true,
+  }) async {
     if (route == SignInRoute.staff && user.staffToken == null) {
       // Nothing good comes of storing half a staff session; better to ask them
       // to sign in now, while they are looking at the app.
-      await _signOut();
+      await _signOutBecause('Your staff session was incomplete.');
       return;
     }
 
     _od.setUser(user);
-    if (route == SignInRoute.staff) {
-      await SessionService.saveStaff(user);
-      await SessionService.rememberRoute(SignInRoute.staff.name);
-    } else {
-      // Firebase holds the session itself; all we keep is the fact that it
-      // has one, so the next launch knows to wait for it.
-      await SessionService.rememberRoute(SignInRoute.google.name);
+    if (remember) {
+      if (route == SignInRoute.staff) {
+        await SessionService.saveStaff(user);
+      } else {
+        // Firebase holds the session itself; this is only so the next launch
+        // can open on them instead of asking who they are.
+        await SessionService.saveStudent(user);
+      }
+      await SessionService.rememberRoute(route.name);
     }
     await PushService.start();
     if (mounted) {
@@ -287,7 +333,23 @@ class _AppGateState extends State<AppGate> {
     }
   }
 
+  /// Signs somebody out and records what pushed them out, so the sign-in
+  /// screen can explain rather than simply reappear.
+  Future<void> _signOutBecause(String reason) async {
+    await SessionService.rememberSignOutReason(reason);
+    await _signOut();
+    if (mounted) setState(() => _signOutReason = reason);
+  }
+
   Future<void> _signOut() async {
+    // Tell the server first, while we still have a session to tell it with.
+    // Best effort: somebody signing out on a train should not be stuck in the
+    // app because the message could not be delivered.
+    try {
+      await ApiClient.call('SIGN_OUT');
+    } on ApiException {
+      // Nothing to do about it, and nothing depends on it.
+    }
     await PushService.stop();
     await SessionService.clear();
     await NotificationService.reset();
@@ -306,7 +368,7 @@ class _AppGateState extends State<AppGate> {
 
   void _onSessionExpired() {
     if (_user == null) return;
-    _signOut();
+    _signOutBecause('Your session was refused by the server.');
     if (mounted) {
       showToast(context, 'Your session expired. Please sign in again.', error: true);
     }
@@ -344,7 +406,10 @@ class _AppGateState extends State<AppGate> {
 
     final role = _pickedRole;
     if (role == null) {
-      return RolePickerScreen(onPick: (r) => setState(() => _pickedRole = r));
+      return RolePickerScreen(
+        signedOutBecause: _signOutReason,
+        onPick: (r) => setState(() => _pickedRole = r),
+      );
     }
 
     return AuthScreen(
