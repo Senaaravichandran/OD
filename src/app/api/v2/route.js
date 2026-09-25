@@ -7,6 +7,7 @@
 // Every rule that matters is enforced here and again by database triggers, so
 // no client and no future code path can approve out of order.
 
+import bcrypt from 'bcryptjs';
 import { NextResponse } from 'next/server';
 import {
   HttpError, clean, dateOf, identify, passwordIdentify, publicUser, requestForActor, requireRole, sectionOf, signStaffToken, text, uuidOf, yearOf,
@@ -68,7 +69,9 @@ async function session(auth) {
   if (auth.role === 'STUDENT') {
     const student = await one(
       `select s.id, s.register_number, s.name, s.year, s.section, s.profile_completed,
+              c.is_active as class_active,
               st.name as advisor_name, st.email as advisor_email,
+              st.is_active as advisor_active,
               coalesce(c.advisor_label, st.name) as advisor_display
          from students s
          left join class_assignments c on c.id = s.class_assignment_id
@@ -79,15 +82,23 @@ async function session(auth) {
     if (!student || !student.profile_completed) {
       return { success: true, needsRegistration: true, email: auth.email, name: auth.name };
     }
+
+    // Their advisor has been removed, or the class was released with them.
+    // Everything they have already filed still stands; they just cannot raise
+    // a new OD until they say which class they are in now.
+    const orphaned = !student.class_active || student.advisor_active === false;
+
     return {
       success: true,
+      needsClassUpdate: orphaned,
       user: publicUser(auth, {
         registerNumber: student.register_number,
         name: student.name,
         year: student.year,
         section: student.section,
-        advisorName: student.advisor_display,
-        advisorEmail: student.advisor_email,
+        advisorName: orphaned ? null : student.advisor_display,
+        advisorEmail: orphaned ? null : student.advisor_email,
+        needsClassUpdate: orphaned,
         photoUrl: auth.photoUrl,
       }),
     };
@@ -203,6 +214,296 @@ async function changeClass(auth, p) {
     details: { year, section },
   });
   return session(await identifyAgain(auth));
+}
+
+// ---------------------------------------------------------------------------
+// The HOD manages the class advisors
+// ---------------------------------------------------------------------------
+
+/// Everything the HOD needs to see about the department's advisors: who they
+/// are, which classes they hold, how much history they carry, and whether they
+/// are still serving. Never a password or a digest.
+async function advisorRoster(auth) {
+  requireRole(auth, 'HOD');
+  const rows = await query(
+    `select s.id, s.name, s.email, s.is_hod, s.is_active, s.retired_at,
+            coalesce(json_agg(
+              json_build_object('year', c.year, 'section', c.section)
+              order by c.year, c.section
+            ) filter (where c.id is not null), '[]') as classes,
+            (select count(*) from od_requests r where r.advisor_staff_id = s.id) as request_count,
+            (select count(*) from students st
+               join class_assignments ca on ca.id = st.class_assignment_id
+              where ca.staff_id = s.id and ca.is_active) as student_count
+       from staff s
+       left join class_assignments c on c.staff_id = s.id and c.is_active
+      group by s.id
+      order by s.is_hod desc, s.is_active desc, s.name`
+  );
+
+  // Which classes nobody is holding, so the HOD can see the gaps a removal left.
+  const taken = await query(
+    'select year, section from class_assignments where is_active order by year, section'
+  );
+  const held = new Set(taken.map((c) => `${c.year}-${c.section}`));
+
+  return {
+    success: true,
+    advisors: rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      isHod: r.is_hod,
+      isActive: r.is_active,
+      retiredAt: r.retired_at,
+      classes: r.classes,
+      requestCount: Number(r.request_count),
+      studentCount: Number(r.student_count),
+    })),
+    heldClasses: [...held],
+  };
+}
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function advisorEmail(v) {
+  const email = clean(v).toLowerCase();
+  if (!EMAIL.test(email)) throw new HttpError(400, 'That is not a valid email address.');
+  return email;
+}
+
+function advisorPassword(v, { required }) {
+  const password = String(v ?? '');
+  if (!password) {
+    if (required) throw new HttpError(400, 'Give the advisor a password.');
+    return null;
+  }
+  if (password.length < 8) {
+    throw new HttpError(400, 'A password needs at least 8 characters.');
+  }
+  return password;
+}
+
+/// The classes an advisor is to hold, as {year, section} pairs.
+function advisorClasses(v) {
+  if (!Array.isArray(v)) return null;
+  return v.map((c) => ({ year: yearOf(c?.year), section: sectionOf(c?.section) }));
+}
+
+/// Puts [staffId] in charge of exactly [classes] and nothing else.
+///
+/// A class already held by somebody else changes hands: the old assignment is
+/// retired rather than deleted, so the students in it keep a trail and the
+/// requests already filed keep the advisor who received them.
+async function setClasses(client, staffId, classes) {
+  if (!classes) return;
+  const wanted = new Set(classes.map((c) => `${c.year}-${c.section}`));
+
+  const current = await client.query(
+    'select id, year, section from class_assignments where staff_id = $1 and is_active',
+    [staffId]
+  );
+  for (const row of current.rows) {
+    if (!wanted.has(`${row.year}-${row.section}`)) {
+      await client.query('update class_assignments set is_active = false where id = $1', [row.id]);
+    }
+  }
+
+  for (const c of classes) {
+    const existing = await client.query(
+      'select id, staff_id from class_assignments where year = $1 and section = $2 and is_active',
+      [c.year, c.section]
+    );
+    if (existing.rows.length) {
+      if (existing.rows[0].staff_id === staffId) continue;
+      // Taking the class from whoever held it.
+      await client.query(
+        'update class_assignments set is_active = false where id = $1',
+        [existing.rows[0].id]
+      );
+    }
+    await client.query(
+      'insert into class_assignments (staff_id, year, section) values ($1, $2, $3)',
+      [staffId, c.year, c.section]
+    );
+  }
+}
+
+async function createAdvisor(auth, p) {
+  requireRole(auth, 'HOD');
+  const name = text(p.name, 'Name', 80);
+  const email = advisorEmail(p.email);
+  const password = advisorPassword(p.password, { required: true });
+  const classes = advisorClasses(p.classes);
+
+  const existing = await one('select id, is_active from staff where email = $1', [email]);
+  if (existing?.is_active) {
+    throw new HttpError(409, 'An advisor already uses that email address.');
+  }
+
+  const hash = await bcrypt.hash(password, 12);
+
+  const staffId = await transaction(async (client) => {
+    let id = existing?.id;
+
+    if (id) {
+      // The address belonged to an advisor who was removed. Bringing them back
+      // keeps the ODs they handled attached to the same person.
+      await client.query(
+        `update staff set name = $1, password_hash = $2, is_active = true,
+                          retired_at = null, updated_at = now()
+          where id = $3`,
+        [name, hash, id]
+      );
+      await client.query(
+        `update users set display_name = $1, is_active = true, role = 'ADVISOR'
+          where id = (select user_id from staff where id = $2)`,
+        [name, id]
+      );
+    } else {
+      const user = await client.query(
+        `insert into users (email, role, display_name) values ($1, 'ADVISOR', $2)
+         returning id`,
+        [email, name]
+      );
+      const staff = await client.query(
+        `insert into staff (user_id, name, email, password_hash) values ($1, $2, $3, $4)
+         returning id`,
+        [user.rows[0].id, name, email, hash]
+      );
+      id = staff.rows[0].id;
+    }
+
+    await setClasses(client, id, classes);
+    await audit(client, {
+      actorUserId: auth.userId, actorEmail: auth.email, actorRole: 'HOD',
+      action: existing ? 'ADVISOR_RESTORED' : 'ADVISOR_CREATED',
+      entityType: 'staff', entityId: id,
+      details: { name, email, classes: (classes || []).map((c) => `${c.year}-${c.section}`) },
+    });
+    return id;
+  });
+
+  return { ...(await advisorRoster(auth)), staffId };
+}
+
+async function updateAdvisor(auth, p) {
+  requireRole(auth, 'HOD');
+  const staffId = uuidOf(p.staffId, 'No advisor was specified.');
+  const current = await one('select * from staff where id = $1', [staffId]);
+  if (!current) throw new HttpError(404, 'That advisor was not found.');
+  if (!current.is_active) {
+    throw new HttpError(409, 'That advisor has been removed. Add them again to bring them back.');
+  }
+
+  const name = p.name === undefined ? current.name : text(p.name, 'Name', 80);
+  const email = p.email === undefined ? current.email : advisorEmail(p.email);
+  const password = advisorPassword(p.password, { required: false });
+  const classes = advisorClasses(p.classes);
+
+  if (email !== current.email) {
+    const clash = await one('select id from staff where email = $1 and id <> $2', [email, staffId]);
+    if (clash) throw new HttpError(409, 'Another advisor already uses that email address.');
+  }
+
+  // The HOD's own classes are not a thing, and demoting themselves by accident
+  // would lock the department out of this screen.
+  if (current.is_hod && classes) {
+    throw new HttpError(400, 'The HOD does not hold a class.');
+  }
+
+  const hash = password ? await bcrypt.hash(password, 12) : null;
+
+  await transaction(async (client) => {
+    await client.query(
+      `update staff
+          set name = $1, email = $2,
+              password_hash = coalesce($3, password_hash),
+              updated_at = now()
+        where id = $4`,
+      [name, email, hash, staffId]
+    );
+    await client.query(
+      'update users set display_name = $1, email = $2 where id = $3',
+      [name, email, current.user_id]
+    );
+    if (!current.is_hod) await setClasses(client, staffId, classes);
+
+    await audit(client, {
+      actorUserId: auth.userId, actorEmail: auth.email, actorRole: 'HOD',
+      action: 'ADVISOR_UPDATED', entityType: 'staff', entityId: staffId,
+      details: {
+        name,
+        email,
+        passwordChanged: Boolean(hash),
+        classes: classes ? classes.map((c) => `${c.year}-${c.section}`) : 'unchanged',
+      },
+    });
+  });
+
+  return advisorRoster(auth);
+}
+
+async function removeAdvisor(auth, p) {
+  requireRole(auth, 'HOD');
+  const staffId = uuidOf(p.staffId, 'No advisor was specified.');
+  const current = await one('select * from staff where id = $1', [staffId]);
+  if (!current) throw new HttpError(404, 'That advisor was not found.');
+  if (current.is_hod) throw new HttpError(400, 'The HOD cannot be removed.');
+  if (!current.is_active) throw new HttpError(409, 'That advisor has already been removed.');
+
+  // Who is about to be left without an advisor, so the HOD is told before the
+  // students find out.
+  const affected = await query(
+    `select st.name, st.register_number, ca.year, ca.section
+       from students st
+       join class_assignments ca on ca.id = st.class_assignment_id
+      where ca.staff_id = $1 and ca.is_active
+      order by ca.year, ca.section, st.name`,
+    [staffId]
+  );
+
+  await transaction(async (client) => {
+    // The trigger releases their classes; the requests they handled keep
+    // pointing at them, which is what makes the old reports still read right.
+    await client.query(
+      'update staff set is_active = false, retired_at = now(), updated_at = now() where id = $1',
+      [staffId]
+    );
+    await client.query('update users set is_active = false where id = $1', [current.user_id]);
+
+    await audit(client, {
+      actorUserId: auth.userId, actorEmail: auth.email, actorRole: 'HOD',
+      action: 'ADVISOR_REMOVED', entityType: 'staff', entityId: staffId,
+      details: {
+        name: current.name,
+        email: current.email,
+        studentsToReassign: affected.length,
+      },
+    });
+  });
+
+  // Tell them directly rather than leaving it to be discovered.
+  for (const student of affected) {
+    const row = await one(
+      'select user_id from students where register_number = $1', [student.register_number]
+    );
+    if (!row) continue;
+    await notify(null, row.user_id, {
+      title: 'Choose your class again',
+      body: `${current.name} is no longer your class advisor. Open your profile and `
+        + 'pick your class so your next OD reaches the right person.',
+      category: 'CLASS_CHANGED',
+    });
+  }
+
+  return {
+    ...(await advisorRoster(auth)),
+    releasedClasses: [...new Set(affected.map((a) => `Year ${a.year} Section ${a.section}`))],
+    studentsToReassign: affected.map((a) => ({
+      name: a.name, registerNumber: a.register_number,
+    })),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -447,11 +748,18 @@ async function createOd(auth, p) {
 
   const student = await one(
     `select s.id, s.name, s.register_number, s.class_assignment_id, c.staff_id
-       from students s left join class_assignments c on c.id = s.class_assignment_id
-      where s.id = $1`,
+       from students s
+       left join class_assignments c
+              on c.id = s.class_assignment_id and c.is_active
+       left join staff st on st.id = c.staff_id and st.is_active
+      where s.id = $1 and st.id is not null`,
     [auth.studentId]
   );
-  if (!student?.staff_id) throw new HttpError(409, 'No class advisor is set on your profile.');
+  if (!student?.staff_id) {
+    throw new HttpError(409,
+      'Your class advisor has changed. Open your profile and choose your class '
+      + 'again before raising an OD.');
+  }
 
   const submissionType = p.submissionType === 'TEAM' ? 'TEAM' : 'SOLO';
   const eventDate = dateOf(p.eventDate, 'Event date');
@@ -908,6 +1216,10 @@ export async function POST(req) {
       case 'HOD_DECIDE':       return json(await hodDecide(auth, p));
       case 'SUBMIT_RESULT':    return json(await submitResult(auth, p));
       case 'REGISTER_DEVICE':  return json(await registerDevice(auth, p));
+      case 'ADVISOR_ROSTER':   return json(await advisorRoster(auth));
+      case 'ADVISOR_CREATE':   return json(await createAdvisor(auth, p));
+      case 'ADVISOR_UPDATE':   return json(await updateAdvisor(auth, p));
+      case 'ADVISOR_REMOVE':   return json(await removeAdvisor(auth, p));
       case 'MARK_READ':        return json(await markNotificationsRead(auth));
       case 'UPLOAD_FILE':      return json(await uploadFile(auth, p));
       case 'FILE_URL':         return json(await fileUrl(auth, p));

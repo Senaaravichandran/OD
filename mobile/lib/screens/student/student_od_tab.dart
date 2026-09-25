@@ -9,6 +9,7 @@ import 'attachments_sheet.dart';
 import 'new_od_sheet.dart';
 import 'od_card.dart';
 import 'result_sheet.dart';
+import 'student_profile_tab.dart';
 
 /// Tab 1: the ODs that are still moving through the approval chain.
 class StudentOdTab extends StatefulWidget {
@@ -42,8 +43,16 @@ class _StudentOdTabState extends State<StudentOdTab> {
 
   Future<void> _newOd() async {
     final user = _od.user ?? widget.user;
-    if (user.advisorName == null || user.advisorName!.isEmpty) {
-      showToast(context, 'No class advisor is set on your profile.', error: true);
+    if (user.needsClassUpdate ||
+        user.advisorName == null ||
+        user.advisorName!.isEmpty) {
+      // The server would refuse this anyway; saying why, and offering the fix,
+      // beats a rejection they cannot act on.
+      showToast(
+        context,
+        'Choose your class first - your advisor has changed.',
+        error: true,
+      );
       return;
     }
     final created = await showModalBottomSheet<bool>(
@@ -96,6 +105,14 @@ class _StudentOdTabState extends State<StudentOdTab> {
             _SummaryRow(od: _od),
             const SizedBox(height: 20),
 
+            // Their class advisor was removed by the department. Everything
+            // they have filed still stands, but a new OD has nowhere to go
+            // until they say which class they are in now.
+            if ((_od.user ?? widget.user).needsClassUpdate) ...[
+              const _ClassAdvisorGoneBanner(),
+              const SizedBox(height: 16),
+            ],
+
             if (awaitingResult.isNotEmpty) ...[
               const SectionHeader(title: 'Waiting for your result'),
               for (final r in awaitingResult)
@@ -143,6 +160,11 @@ class _StudentOdTabState extends State<StudentOdTab> {
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _newOd,
+        // Left tappable on purpose: a disabled button explains nothing, and
+        // tapping this one says what to do about it.
+        backgroundColor: (_od.user ?? widget.user).needsClassUpdate
+            ? AppTheme.muted
+            : null,
         icon: const Icon(Icons.add_rounded),
         label: const Text('New OD'),
       ),
@@ -200,6 +222,64 @@ class _SummaryRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+
+/// Shown when the department has removed the student's class advisor.
+///
+/// It says what happened, what it means for them, and what to do - in that
+/// order, because "your advisor was removed" on its own only worries people.
+class _ClassAdvisorGoneBanner extends StatelessWidget {
+  const _ClassAdvisorGoneBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.tint(AppTheme.warning),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.warning.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.swap_horiz_rounded, size: 19, color: AppTheme.warning),
+              const SizedBox(width: 9),
+              const Expanded(
+                child: Text(
+                  'Choose your class again',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.warning,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          const Text(
+            'Your class advisor has changed. The ODs you have already sent are '
+            'unaffected, but a new one needs an advisor to go to.',
+            style: TextStyle(fontSize: 12.5, height: 1.45, color: AppTheme.ink),
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FilledButton.icon(
+              onPressed: () => chooseClass(context),
+              icon: const Icon(Icons.school_outlined, size: 17),
+              label: const Text('Choose my class'),
+              style: FilledButton.styleFrom(backgroundColor: AppTheme.warning),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

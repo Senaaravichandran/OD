@@ -711,6 +711,19 @@ function StudentView({ data, ctx, tab }) {
 
   return (
     <>
+      {/* Their class advisor was removed. Everything already filed still
+          stands; a new OD has nowhere to go until they choose again. */}
+      {user.needsClassUpdate && (
+        <div className={styles.error} role="status">
+          <strong>Choose your class again.</strong>{' '}
+          Your class advisor has changed. The ODs you have already sent are
+          unaffected, but a new one needs an advisor to go to.{' '}
+          <button type="button" className={styles.linkBtn} onClick={() => setEditClass(true)}>
+            Choose my class
+          </button>
+        </div>
+      )}
+
       <section className={styles.banner}>
         <div>
           <h2 className={styles.bannerTitle}>Hello, {user.name}</h2>
@@ -1854,6 +1867,9 @@ function ReportDetail({ r, exporting, onExport, onBack }) {
 function ProfileView({ ctx, onEditClass }) {
   const { user, onLogout } = ctx;
   const isStudent = user.role === 'STUDENT';
+  const [managing, setManaging] = useState(false);
+
+  if (managing) return <ManageAdvisors ctx={ctx} onBack={() => setManaging(false)} />;
 
   return (
     <>
@@ -1888,8 +1904,337 @@ function ProfileView({ ctx, onEditClass }) {
             Registered under the wrong class?
           </button>
         )}
+        {/* Managing the roster is the HOD's job and nobody else's; the server
+            refuses it for anyone else, so offering it would be a dead end. */}
+        {user.role === 'HOD' && (
+          <button type="button" className={styles.secondaryBtn} onClick={() => setManaging(true)}>
+            Change class advisor
+          </button>
+        )}
         <button type="button" className={styles.dangerBtn} onClick={onLogout}>Sign out</button>
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The HOD manages the class advisors
+// ---------------------------------------------------------------------------
+
+/// Add an advisor, correct one, or remove one.
+///
+/// Removing is a retirement rather than a deletion: the ODs an advisor
+/// approved keep naming them, so past reports still read correctly. What
+/// changes is that they can no longer sign in, their classes are released, and
+/// the students in those classes are asked to choose again.
+function ManageAdvisors({ ctx, onBack }) {
+  const [advisors, setAdvisors] = useState(null);
+  const [error, setError] = useState('');
+  const [editing, setEditing] = useState(null); // an advisor, or 'new'
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    // Fetched, not set: the state lands when the request comes back, which is
+    // already a tick later, so there is no cascade to trigger.
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await ctx.call('ADVISOR_ROSTER');
+        if (!cancelled) {
+          setAdvisors(res.advisors || []);
+          setError('');
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ctx]);
+
+  const remove = async (advisor) => {
+    const holding = advisor.classes.length
+      ? `\n\n${advisor.classes.map((c) => `${c.year}-${c.section}`).join(', ')} `
+        + `will be left without an advisor, and ${advisor.studentCount} `
+        + `student${advisor.studentCount === 1 ? '' : 's'} will be asked to choose again.`
+      : '';
+    // eslint-disable-next-line no-alert
+    const ok = window.confirm(
+      `Remove ${advisor.name}?\n\nThey will not be able to sign in any more. `
+      + `The ${advisor.requestCount} OD${advisor.requestCount === 1 ? '' : 's'} they have `
+      + `already handled will keep their name, so past reports do not change.${holding}`,
+    );
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      const res = await ctx.call('ADVISOR_REMOVE', { staffId: advisor.id });
+      setAdvisors(res.advisors || []);
+      const freed = res.releasedClasses || [];
+      const students = res.studentsToReassign || [];
+      ctx.setToast(
+        freed.length
+          ? `${advisor.name} removed. ${freed.join(', ')} now ${freed.length === 1 ? 'has' : 'have'} `
+            + `no advisor; ${students.length} student${students.length === 1 ? '' : 's'} asked to choose again.`
+          : `${advisor.name} removed.`,
+      );
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <AdvisorEditor
+        ctx={ctx}
+        advisor={editing === 'new' ? null : editing}
+        roster={advisors || []}
+        onDone={(roster) => {
+          if (roster) setAdvisors(roster);
+          setEditing(null);
+        }}
+      />
+    );
+  }
+
+  const serving = (advisors || []).filter((a) => a.isActive && !a.isHod);
+  const hod = (advisors || []).filter((a) => a.isHod);
+  const retired = (advisors || []).filter((a) => !a.isActive);
+
+  const held = new Set(serving.flatMap((a) => a.classes.map((c) => `${c.year}-${c.section}`)));
+  const gaps = [];
+  for (let year = 1; year <= 4; year += 1) {
+    for (const section of ['A', 'B', 'C', 'D']) {
+      if (!held.has(`${year}-${section}`)) gaps.push(`${year}-${section}`);
+    }
+  }
+
+  const row = (a, actions) => (
+    <tr key={a.id} className={a.isActive ? '' : styles.muted}>
+      <td>
+        {a.name}
+        {a.isHod && <> <span className={styles.chip}>HOD</span></>}
+        <br />
+        <small className={styles.muted}>{a.email}</small>
+      </td>
+      <td>
+        {a.isHod ? '—' : a.classes.length
+          ? a.classes.map((c) => `${c.year}-${c.section}`).join(', ')
+          : <span className={styles.muted}>No class</span>}
+      </td>
+      <td>{a.requestCount}</td>
+      <td>{a.isHod || !a.isActive ? '—' : a.studentCount}</td>
+      <td>{actions}</td>
+    </tr>
+  );
+
+  return (
+    <>
+      <div className={styles.rowBetween}>
+        <button type="button" className={styles.linkBtn} onClick={onBack}>← Back to profile</button>
+        <button type="button" className={styles.primaryBtn} onClick={() => setEditing('new')}>
+          + Add advisor
+        </button>
+      </div>
+
+      <section className={styles.banner}>
+        <div>
+          <h2 className={styles.bannerTitle}>Class advisors</h2>
+          <p className={styles.bannerSub}>
+            Department of Information Technology · {serving.length} serving
+          </p>
+        </div>
+      </section>
+
+      {error && <ErrorBox text={error} />}
+
+      {gaps.length > 0 && (
+        <div className={styles.error} role="status">
+          No advisor for {gaps.join(', ')}. Students in{' '}
+          {gaps.length === 1 ? 'that class' : 'those classes'} cannot raise an OD
+          until somebody is assigned.
+        </div>
+      )}
+
+      {advisors === null ? (
+        <p className={styles.muted}>Loading…</p>
+      ) : (
+        <>
+          <h3 className={styles.sectionHeading}>Serving</h3>
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr><th>Advisor</th><th>Classes</th><th>ODs handled</th><th>Students</th><th /></tr>
+              </thead>
+              <tbody>
+                {serving.map((a) => row(a, (
+                  <>
+                    <button type="button" className={styles.linkBtn} disabled={busy}
+                      onClick={() => setEditing(a)}>Update</button>
+                    {' · '}
+                    <button type="button" className={styles.linkBtn} disabled={busy}
+                      onClick={() => remove(a)}>Remove</button>
+                  </>
+                )))}
+                {hod.map((a) => row(a, (
+                  <button type="button" className={styles.linkBtn} disabled={busy}
+                    onClick={() => setEditing(a)}>Update</button>
+                )))}
+              </tbody>
+            </table>
+          </div>
+
+          {retired.length > 0 && (
+            <>
+              <h3 className={styles.sectionHeading}>Removed</h3>
+              <p className={styles.muted}>
+                Kept so the ODs they approved still name them. Adding the same
+                address again brings the person back with their history.
+              </p>
+              <div className={styles.tableWrap}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr><th>Advisor</th><th>Classes</th><th>ODs handled</th><th>Students</th><th /></tr>
+                  </thead>
+                  <tbody>{retired.map((a) => row(a, <span className={styles.muted}>Removed</span>))}</tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+/// Adding a new advisor, or correcting an existing one. The fields are the
+/// same either way; the only difference is that a new advisor must be given a
+/// password, while an existing one keeps theirs unless a new one is typed.
+function AdvisorEditor({ ctx, advisor, roster, onDone }) {
+  const isNew = !advisor;
+  const isHod = advisor?.isHod === true;
+
+  const [name, setName] = useState(advisor?.name || '');
+  const [email, setEmail] = useState(advisor?.email || '');
+  const [password, setPassword] = useState('');
+  const [classes, setClasses] = useState(
+    () => new Set((advisor?.classes || []).map((c) => `${c.year}-${c.section}`)),
+  );
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  /// Who holds a class now, so taking it is a visible decision.
+  const heldBy = (key) => roster.find(
+    (a) => a.isActive && a.id !== advisor?.id
+      && a.classes.some((c) => `${c.year}-${c.section}` === key),
+  )?.name;
+
+  const toggle = (key) => setClasses((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const submit = async (ev) => {
+    ev.preventDefault();
+    setBusy(true);
+    setError('');
+    const payload = {
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      ...(password ? { password } : {}),
+      ...(isHod ? {} : {
+        classes: [...classes].map((key) => ({
+          year: Number(key.split('-')[0]),
+          section: key.split('-')[1],
+        })),
+      }),
+    };
+    try {
+      const res = isNew
+        ? await ctx.call('ADVISOR_CREATE', payload)
+        : await ctx.call('ADVISOR_UPDATE', { staffId: advisor.id, ...payload });
+      ctx.setToast(isNew ? 'Class advisor added.' : 'Class advisor updated.');
+      onDone(res.advisors || null);
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button type="button" className={styles.linkBtn} onClick={() => onDone(null)}>
+        ← Back to the roster
+      </button>
+
+      <section className={styles.banner}>
+        <div>
+          <h2 className={styles.bannerTitle}>
+            {isNew ? 'Add a class advisor' : `Update ${advisor.name}`}
+          </h2>
+        </div>
+      </section>
+
+      <form className={styles.form} onSubmit={submit}>
+        <Field label="Full name">
+          <input className={styles.input} value={name} onChange={(e) => setName(e.target.value)}
+            required maxLength={80} />
+        </Field>
+
+        <Field label="Sign-in email">
+          <input type="email" className={styles.input} value={email}
+            onChange={(e) => setEmail(e.target.value)} required />
+          <span className={styles.muted}>
+            They can sign in with this, by Google or by password.
+          </span>
+        </Field>
+
+        <Field label={isNew ? 'Password' : 'New password'}>
+          <input type="password" className={styles.input} value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required={isNew} minLength={8} autoComplete="new-password" />
+          <span className={styles.muted}>
+            {isNew
+              ? 'At least 8 characters. Tell them what it is.'
+              : 'Leave blank to keep their current password.'}
+          </span>
+        </Field>
+
+        {!isHod && (
+          <Field label="Classes they advise">
+            <span className={styles.muted}>
+              Choosing a class that somebody else holds moves it to this advisor.
+            </span>
+            {[1, 2, 3, 4].map((year) => (
+              <div key={year} className={styles.classRow}>
+                <span className={styles.classYear}>Year {year}</span>
+                {['A', 'B', 'C', 'D'].map((section) => {
+                  const key = `${year}-${section}`;
+                  const holder = heldBy(key);
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={classes.has(key) ? styles.classChipOn : styles.classChip}
+                      onClick={() => toggle(key)}
+                      title={holder ? `Currently ${holder}` : 'Nobody holds this class'}
+                    >
+                      {section}{holder ? ` · ${holder}` : ''}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </Field>
+        )}
+
+        <ErrorBox text={error} />
+        <button type="submit" className={styles.primaryBtn} disabled={busy}>
+          {busy ? 'Saving…' : isNew ? 'Add advisor' : 'Save changes'}
+        </button>
+      </form>
     </>
   );
 }

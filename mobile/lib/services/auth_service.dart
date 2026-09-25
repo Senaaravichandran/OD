@@ -22,25 +22,59 @@ class AuthService {
   static bool get isSignedIn => _auth.currentUser != null;
   static Stream<User?> get changes => _auth.authStateChanges();
 
-  /// Who is signed in, once Firebase has finished looking.
+  /// Who is signed in, once Firebase has finished restoring from disk.
   ///
-  /// Firebase keeps the session on the device, but it restores it
-  /// asynchronously: reading currentUser in the moment after
-  /// Firebase.initializeApp() usually returns null even when somebody is
-  /// signed in. The app took that null at face value and sent everyone back to
-  /// the sign-in screen on every single launch. The first authStateChanges
-  /// event is what actually says, and it arrives as soon as the local read is
-  /// done - no network involved.
-  static Future<User?> restoreSession() async {
-    final already = _auth.currentUser;
-    if (already != null) return already;
+  /// This is fiddlier than it looks, and getting it wrong is what kept sending
+  /// people back to the sign-in screen on every launch.
+  ///
+  /// Firebase does keep the session on the device, but it restores it
+  /// asynchronously. Reading currentUser straight after initializeApp() gives
+  /// null, and - the part that caught us a second time - authStateChanges()
+  /// does not wait either: it emits immediately with whatever the plugin has
+  /// cached, which on a cold start is that same null. The restored user
+  /// arrives afterwards, as a second event. Taking the first event therefore
+  /// reports "signed out" for somebody who is perfectly well signed in.
+  ///
+  /// So when our own record says somebody was signed in, wait for a user
+  /// rather than for an answer, and only conclude they are gone once a
+  /// generous window has passed. When there is no such record, one event is
+  /// enough and start-up stays quick.
+  static Future<User?> restoreSession({required bool expectUser}) =>
+      awaitRestore<User>(
+        current: _auth.currentUser,
+        changes: changes,
+        expectUser: expectUser,
+        fallback: () => _auth.currentUser,
+      );
+
+  /// The waiting rule on its own, with no Firebase in it, so the behaviour
+  /// that has now been got wrong twice can be tested directly.
+  ///
+  /// [expectUser] says whether our own record claims somebody is signed in.
+  /// When it does, a null is treated as "not yet" rather than as an answer.
+  @visibleForTesting
+  static Future<T?> awaitRestore<T extends Object>({
+    required T? current,
+    required Stream<T?> changes,
+    required bool expectUser,
+    T? Function()? fallback,
+    Duration patient = const Duration(seconds: 10),
+    Duration brief = const Duration(seconds: 3),
+  }) async {
+    if (current != null) return current;
+
     try {
-      return await changes.first.timeout(const Duration(seconds: 8));
+      if (!expectUser) {
+        return await changes.first.timeout(brief);
+      }
+      return await changes.firstWhere((v) => v != null).timeout(patient);
     } catch (err) {
-      // A device that never answers should still reach the sign-in screen
-      // rather than hang on the splash.
-      debugPrint('could not restore the session: $err');
-      return _auth.currentUser;
+      // Either the restore genuinely found nobody - the account was removed,
+      // or the credentials were cleared - or the device is being unusually
+      // slow. Fall back to whatever is known now; the sign-in screen is the
+      // right answer if that is still nothing.
+      debugPrint('no session restored after waiting: $err');
+      return fallback?.call();
     }
   }
 

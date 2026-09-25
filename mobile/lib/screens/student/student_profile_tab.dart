@@ -46,55 +46,7 @@ class _StudentProfileTabState extends State<StudentProfileTab> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _changeClass() async {
-    final classes = await _loadClasses();
-    if (classes == null || !mounted) return;
-
-    final picked = await showModalBottomSheet<({int year, String section})>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _ClassPicker(
-        classes: classes,
-        currentYear: widget.user.year,
-        currentSection: widget.user.section,
-      ),
-    );
-    if (picked == null || !mounted) return;
-
-    final user = _od.user ?? widget.user;
-    if (picked.year == user.year && picked.section == user.section) return;
-
-    final ok = await confirm(
-      context,
-      title: 'Change your class?',
-      message:
-          'New OD requests will go to the advisor for Year ${picked.year} '
-          'Section ${picked.section}. Requests you have already sent stay with '
-          'the advisor who received them.',
-      confirmLabel: 'Change class',
-    );
-    if (!ok || !mounted) return;
-
-    try {
-      final updated =
-          await _od.changeClass(year: picked.year, section: picked.section);
-      if (mounted) {
-        showToast(context, 'Class updated. Your advisor is now ${updated.advisorName}.');
-      }
-    } on ApiException catch (e) {
-      if (mounted) showToast(context, e.message, error: true);
-    }
-  }
-
-  Future<List<ClassYear>?> _loadClasses() async {
-    try {
-      return await _od.loadClasses();
-    } on ApiException catch (e) {
-      if (mounted) showToast(context, e.message, error: true);
-      return null;
-    }
-  }
+  Future<void> _changeClass() => chooseClass(context);
 
   Future<void> _signOut() async {
     final ok = await confirm(
@@ -309,8 +261,9 @@ class _ProfileHeader extends StatelessWidget {
 }
 
 /// Pick a class from the department's list. Only classes that exist appear.
-class _ClassPicker extends StatelessWidget {
-  const _ClassPicker({
+class ClassPicker extends StatelessWidget {
+  const ClassPicker({
+    super.key,
     required this.classes,
     required this.currentYear,
     required this.currentSection,
@@ -386,5 +339,66 @@ class _ClassPicker extends StatelessWidget {
           : const Icon(Icons.chevron_right_rounded),
       onTap: () => Navigator.pop(context, (year: year, section: s.section)),
     );
+  }
+}
+
+
+/// Lets a student say which class they are in, and sends them to that class's
+/// advisor from then on.
+///
+/// Lives here rather than inside the profile tab because it is reached from
+/// two places: the profile, where somebody is correcting a mistake, and the OD
+/// tab, where their advisor has been removed and they are being asked to
+/// choose again. Returns true if the class actually changed.
+Future<bool> chooseClass(BuildContext context) async {
+  final od = ODService();
+
+  List<ClassYear> classes;
+  try {
+    classes = await od.loadClasses();
+  } on ApiException catch (e) {
+    if (context.mounted) showToast(context, e.message, error: true);
+    return false;
+  }
+  if (!context.mounted) return false;
+
+  final user = od.user;
+  final picked = await showModalBottomSheet<({int year, String section})>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => ClassPicker(
+      classes: classes,
+      currentYear: user?.year,
+      currentSection: user?.section,
+    ),
+  );
+  if (picked == null || !context.mounted) return false;
+
+  // Re-picking the same class is only a no-op when they still have an advisor;
+  // a student whose advisor was removed is re-confirming, and that has to go
+  // through so the server can attach them to whoever holds it now.
+  final unchanged = picked.year == user?.year && picked.section == user?.section;
+  if (unchanged && !(user?.needsClassUpdate ?? false)) return false;
+
+  final ok = await confirm(
+    context,
+    title: 'Change your class?',
+    message: 'New OD requests will go to the advisor for Year ${picked.year} '
+        'Section ${picked.section}. Requests you have already sent stay with '
+        'the advisor who received them.',
+    confirmLabel: 'Change class',
+  );
+  if (!ok || !context.mounted) return false;
+
+  try {
+    final updated = await od.changeClass(year: picked.year, section: picked.section);
+    if (context.mounted) {
+      showToast(context, 'Class updated. Your advisor is now ${updated.advisorName}.');
+    }
+    return true;
+  } on ApiException catch (e) {
+    if (context.mounted) showToast(context, e.message, error: true);
+    return false;
   }
 }

@@ -112,12 +112,15 @@ export async function identify(req) {
     const data = readStaffToken(token);
     if (!data) throw new HttpError(401, 'Your session expired. Please sign in again.');
     const staff = await one(
-      `select s.id as staff_id, s.name, s.is_hod, u.id as user_id
+      `select s.id as staff_id, s.name, s.is_hod, s.is_active, u.id as user_id
          from staff s join users u on u.id = s.user_id
         where s.id = $1 and s.email = $2`,
       [data.s, data.e]
     );
     if (!staff) throw new HttpError(401, 'This account no longer exists.');
+    if (!staff.is_active) {
+      throw new HttpError(401, 'This account has been removed by the department.');
+    }
     return {
       userId: staff.user_id,
       staffId: staff.staff_id,
@@ -146,13 +149,20 @@ export async function identify(req) {
 
   const email = await assertAllowedEmail(decoded.email);
 
-  // A rostered address is staff, whatever they signed in with.
+  // A rostered address is staff, whatever they signed in with. Retired ones
+  // are looked up too: without that they would fall past this branch and be
+  // handed a brand-new student account, which is not what a removed advisor
+  // signing in should get.
   const staff = await one(
-    `select s.id as staff_id, s.name, s.is_hod, u.id as user_id
+    `select s.id as staff_id, s.name, s.is_hod, s.is_active, u.id as user_id
        from staff s join users u on u.id = s.user_id
       where s.email = $1`,
     [email]
   );
+
+  if (staff && !staff.is_active) {
+    throw new HttpError(403, 'This account has been removed by the department.');
+  }
 
   if (staff) {
     await query(
@@ -214,15 +224,16 @@ export async function identify(req) {
 export async function passwordIdentify({ email, password }) {
   const e = clean(email).toLowerCase();
   const staff = await one(
-    `select s.id as staff_id, s.name, s.is_hod, s.password_hash, u.id as user_id
+    `select s.id as staff_id, s.name, s.is_hod, s.is_active, s.password_hash,
+            u.id as user_id
        from staff s join users u on u.id = s.user_id
       where s.email = $1`,
     [e]
   );
   // Same message either way, so this cannot be used to discover which
-  // addresses are staff.
+  // addresses are staff - including the ones that used to be.
   const wrong = new HttpError(401, 'Incorrect email or password.');
-  if (!staff || !staff.password_hash) throw wrong;
+  if (!staff || !staff.password_hash || !staff.is_active) throw wrong;
   const ok = await bcrypt.compare(String(password || ''), staff.password_hash);
   if (!ok) throw wrong;
 

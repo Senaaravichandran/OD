@@ -4,6 +4,7 @@ import '../../config/app_config.dart';
 import '../../models/user.dart';
 import '../../services/od_service.dart';
 import '../../theme.dart';
+import '../hod/manage_advisors_screen.dart';
 import '../../widgets/common.dart';
 
 /// Profile for an advisor or the HOD.
@@ -162,6 +163,33 @@ class StaffProfileTab extends StatelessWidget {
         ],
 
         const SizedBox(height: 16),
+
+        // Managing the department's advisors is the HOD's job, and nobody
+        // else's - the server refuses these actions for anyone but them, so
+        // showing the door to an advisor would only be a dead end.
+        if (user.role == UserRole.hod) ...[
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.manage_accounts_outlined,
+                  size: 20, color: AppTheme.primary),
+              title: const Text(
+                'Change class advisor',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text(
+                'Add, update or remove a class advisor',
+                style: TextStyle(fontSize: 12),
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ManageAdvisorsScreen()),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+
         Card(
           child: ListTile(
             leading: const Icon(Icons.logout_rounded, size: 20, color: AppTheme.danger),

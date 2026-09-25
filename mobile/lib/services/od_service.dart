@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../models/class_advisor.dart';
 import '../models/od_request.dart';
 import '../models/user.dart';
 import 'api_client.dart';
@@ -140,6 +141,64 @@ class ODService extends ChangeNotifier {
       debugPrint('could not register device for push: ${e.message}');
     }
   }
+
+  // -------------------------------------------------------------------------
+  // The HOD manages the class advisors
+  // -------------------------------------------------------------------------
+
+  /// The department's advisors, as the HOD sees them. Refused for anyone else.
+  Future<List<ClassAdvisor>> advisorRoster() async {
+    final res = await _call('ADVISOR_ROSTER');
+    return _rosterFrom(res);
+  }
+
+  Future<List<ClassAdvisor>> createAdvisor({
+    required String name,
+    required String email,
+    required String password,
+    required List<AdvisorClassRef> classes,
+  }) async {
+    final res = await _call('ADVISOR_CREATE', {
+      'name': name,
+      'email': email,
+      'password': password,
+      'classes': classes.map((c) => c.toJson()).toList(),
+    });
+    return _rosterFrom(res);
+  }
+
+  /// Any field left null is left alone - in particular a blank password means
+  /// "keep the one they have", not "clear it".
+  Future<List<ClassAdvisor>> updateAdvisor({
+    required String staffId,
+    String? name,
+    String? email,
+    String? password,
+    List<AdvisorClassRef>? classes,
+  }) async {
+    final res = await _call('ADVISOR_UPDATE', {
+      'staffId': staffId,
+      if (name != null) 'name': name,
+      if (email != null) 'email': email,
+      if (password != null && password.isNotEmpty) 'password': password,
+      if (classes != null) 'classes': classes.map((c) => c.toJson()).toList(),
+    });
+    return _rosterFrom(res);
+  }
+
+  /// Retires an advisor. Their ODs keep naming them; their classes are
+  /// released and the students in them are asked to choose again.
+  Future<({List<ClassAdvisor> roster, AdvisorRemoval removal})> removeAdvisor(
+    String staffId,
+  ) async {
+    final res = await _call('ADVISOR_REMOVE', {'staffId': staffId});
+    return (roster: _rosterFrom(res), removal: AdvisorRemoval.fromJson(res));
+  }
+
+  List<ClassAdvisor> _rosterFrom(Map<String, dynamic> res) =>
+      (res['advisors'] as List? ?? [])
+          .map((e) => ClassAdvisor.fromJson(e as Map<String, dynamic>))
+          .toList();
 
   // -------------------------------------------------------------------------
   // Student

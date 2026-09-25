@@ -48,6 +48,11 @@ class AppUser {
   /// Firebase token on every call, so they have none.
   final String? staffToken;
 
+  /// True when the student's class advisor has been removed and they have not
+  /// yet said which class they are in now. Everything they have already filed
+  /// still stands; they simply cannot raise a new OD until they choose.
+  final bool needsClassUpdate;
+
   const AppUser({
     required this.name,
     required this.email,
@@ -61,6 +66,7 @@ class AppUser {
     this.photoUrl,
     this.classes = const [],
     this.staffToken,
+    this.needsClassUpdate = false,
   });
 
   static UserRole roleFromString(String? role) {
@@ -91,6 +97,7 @@ class AppUser {
           .map((e) => AdvisorClass.fromJson(e as Map<String, dynamic>))
           .toList(),
       staffToken: staffToken,
+      needsClassUpdate: json['needsClassUpdate'] == true,
     );
   }
 
@@ -106,6 +113,7 @@ class AppUser {
         'advisorEmail': advisorEmail,
         'photoUrl': photoUrl,
         'classes': classes.map((c) => c.toJson()).toList(),
+        'needsClassUpdate': needsClassUpdate,
       };
 
   AppUser copyWith({
@@ -129,6 +137,7 @@ class AppUser {
         photoUrl: photoUrl,
         classes: classes,
         staffToken: staffToken ?? this.staffToken,
+        needsClassUpdate: needsClassUpdate,
       );
 
   String get roleString => switch (role) {

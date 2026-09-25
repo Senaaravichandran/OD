@@ -153,11 +153,18 @@ class _AppGateState extends State<AppGate> {
       return;
     }
 
-    // Waited for, not merely read: Firebase restores a saved session a moment
-    // after start-up, and asking too early makes a signed-in student look
-    // signed out.
-    if (await AuthService.restoreSession() != null) {
+    // Our own record of the last way in decides how patient to be. If it says
+    // somebody signed in with Google, wait for Firebase to produce them rather
+    // than believing the premature null it offers on a cold start.
+    final expectUser = await SessionService.lastRoute() == 'google';
+    final restored = await AuthService.restoreSession(expectUser: expectUser);
+
+    if (restored != null) {
       await _exchangeFirebaseSession();
+    } else if (expectUser) {
+      // We were told to expect somebody and nobody came. The credentials are
+      // gone for good, so stop expecting them next time.
+      await SessionService.clear();
     }
     if (mounted) setState(() => _booting = false);
   }
@@ -214,7 +221,14 @@ class _AppGateState extends State<AppGate> {
 
   Future<void> _adopt(AppUser user) async {
     _od.setUser(user);
-    if (user.staffToken != null) await SessionService.saveStaff(user);
+    if (user.staffToken != null) {
+      await SessionService.saveStaff(user);
+      await SessionService.rememberRoute('staff');
+    } else {
+      // Firebase holds the session itself; all we keep is the fact that it
+      // has one, so the next launch knows to wait for it.
+      await SessionService.rememberRoute('google');
+    }
     await PushService.start();
     if (mounted) {
       setState(() {
