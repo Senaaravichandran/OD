@@ -4,6 +4,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/user.dart';
 
+/// How somebody last got into the app.
+///
+/// Stated rather than inferred: start-up waits differently for each, and
+/// guessing from whether a token happens to be present is what let a staff
+/// session be filed as a Google one the moment its token went missing.
+enum SignInRoute { google, staff }
+
 /// Remembers, between launches, that somebody is signed in.
 ///
 /// A staff password session is kept in full: the signed token and the profile

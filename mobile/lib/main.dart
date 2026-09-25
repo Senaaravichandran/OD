@@ -147,16 +147,17 @@ class _AppGateState extends State<AppGate> {
       // Open straight onto their own screen, then confirm with the server
       // behind it. Waiting first would mean staring at the splash on a slow
       // connection for a session we already have.
-      await _adopt(staff);
+      await _adopt(staff, route: SignInRoute.staff);
       if (mounted) setState(() => _booting = false);
-      unawaited(_confirmStaffSession());
+      unawaited(_confirmStaffSession(staff));
       return;
     }
 
     // Our own record of the last way in decides how patient to be. If it says
     // somebody signed in with Google, wait for Firebase to produce them rather
     // than believing the premature null it offers on a cold start.
-    final expectUser = await SessionService.lastRoute() == 'google';
+    final expectUser =
+        await SessionService.lastRoute() == SignInRoute.google.name;
     final restored = await AuthService.restoreSession(expectUser: expectUser);
 
     if (restored != null) {
@@ -174,18 +175,28 @@ class _AppGateState extends State<AppGate> {
   /// The server slides the expiry: a session that is getting on comes back
   /// with a fresh token, so somebody who keeps using the app is never asked
   /// for the password again. A session that has genuinely lapsed signs out.
-  Future<void> _confirmStaffSession() async {
+  Future<void> _confirmStaffSession(AppUser stored) async {
     try {
       final res = await ApiClient.call('SESSION');
-      final renewed = res['token']?.toString();
-      final user = AppUser.fromJson(
-        res['user'] as Map<String, dynamic>,
-        staffToken: renewed ?? _user?.staffToken,
+
+      // Taken from the session we started with, never read back off widget
+      // state. State is assigned behind a mounted check after two awaits, so
+      // reading it here used to hand the refresh a user with no token at all -
+      // which wiped the token, mislabelled the route, and made the next call a
+      // 401 that signed the person out.
+      final token = res['token']?.toString() ?? stored.staffToken;
+      if (token == null) return;
+
+      final profile = res['user'];
+      if (profile is! Map<String, dynamic>) return;
+
+      await _adopt(
+        AppUser.fromJson(profile, staffToken: token),
+        route: SignInRoute.staff,
       );
-      await _adopt(user);
     } on ApiException catch (e) {
-      // Only an expired session is worth signing out for. A flat battery of a
-      // connection should not throw the person out of the app.
+      // Only a refused session is worth signing out for. A flat battery of a
+      // connection should not throw somebody out of the app.
       if (e.isAuthError) await _signOut();
     }
   }
@@ -207,7 +218,10 @@ class _AppGateState extends State<AppGate> {
           _user = null;
         });
       } else {
-        await _adopt(AppUser.fromJson(res['user'] as Map<String, dynamic>));
+        await _adopt(
+          AppUser.fromJson(res['user'] as Map<String, dynamic>),
+          route: SignInRoute.google,
+        );
       }
     } on ApiException catch (e) {
       // The server refused this account - wrong domain, or disabled. Signing
@@ -219,15 +233,29 @@ class _AppGateState extends State<AppGate> {
     }
   }
 
-  Future<void> _adopt(AppUser user) async {
+  /// Takes a signed-in person into the app and remembers them for next time.
+  ///
+  /// [route] is stated by the caller rather than inferred from whether a token
+  /// happens to be present. Inferring it is what let a staff session be filed
+  /// as a Google one the moment its token went missing, and a Google session
+  /// is waited for differently at start-up - so the mistake did not show up
+  /// until the launch after the one that made it.
+  Future<void> _adopt(AppUser user, {required SignInRoute route}) async {
+    if (route == SignInRoute.staff && user.staffToken == null) {
+      // Nothing good comes of storing half a staff session; better to ask them
+      // to sign in now, while they are looking at the app.
+      await _signOut();
+      return;
+    }
+
     _od.setUser(user);
-    if (user.staffToken != null) {
+    if (route == SignInRoute.staff) {
       await SessionService.saveStaff(user);
-      await SessionService.rememberRoute('staff');
+      await SessionService.rememberRoute(SignInRoute.staff.name);
     } else {
       // Firebase holds the session itself; all we keep is the fact that it
       // has one, so the next launch knows to wait for it.
-      await SessionService.rememberRoute('google');
+      await SessionService.rememberRoute(SignInRoute.google.name);
     }
     await PushService.start();
     if (mounted) {
@@ -277,7 +305,7 @@ class _AppGateState extends State<AppGate> {
       return RegistrationScreen(
         email: pending.email,
         suggestedName: pending.name,
-        onDone: _adopt,
+        onDone: (user) => _adopt(user, route: SignInRoute.google),
         onCancel: _signOut,
       );
     }
@@ -303,7 +331,7 @@ class _AppGateState extends State<AppGate> {
       role: role,
       onBack: () => setState(() => _pickedRole = null),
       onFirebaseSignedIn: _exchangeFirebaseSession,
-      onStaffSignedIn: _adopt,
+      onStaffSignedIn: (user) => _adopt(user, route: SignInRoute.staff),
     );
   }
 }
