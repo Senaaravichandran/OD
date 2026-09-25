@@ -182,7 +182,8 @@ class _AppGateState extends State<AppGate> {
   /// nothing, rather than at start-up where it used to hold up the whole app
   /// and then get the answer wrong anyway.
   Future<void> _confirmStudentSession() async {
-    final user = await AuthService.restoreSession(expectUser: true);
+    // The same wait the API client uses, shared rather than raced.
+    final user = await AuthService.ensureRestored();
     if (user == null) {
       // Firebase has genuinely lost them - reinstalled, cleared, or the
       // account was removed. Nothing to refresh against.

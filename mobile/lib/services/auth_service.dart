@@ -39,6 +39,23 @@ class AuthService {
   /// rather than for an answer, and only conclude they are gone once a
   /// generous window has passed. When there is no such record, one event is
   /// enough and start-up stays quick.
+  /// The restore, waited for once and then remembered.
+  ///
+  /// Every authenticated call needs to know whether anybody is signed in, and
+  /// on a cold start the honest answer takes a moment to arrive. Asking
+  /// Firebase directly gives null until then, and treating that null as
+  /// "signed out" is what threw people out on the first call after opening the
+  /// app. Waiting is therefore not optional - but it only has to happen once,
+  /// so it is held here rather than paid for on every request.
+  static Future<User?>? _restoring;
+
+  static Future<User?> ensureRestored() {
+    final already = _auth.currentUser;
+    if (already != null) return Future<User?>.value(already);
+    return _restoring ??= restoreSession(expectUser: true)
+        .whenComplete(() => _restoring = null);
+  }
+
   static Future<User?> restoreSession({required bool expectUser}) =>
       awaitRestore<User>(
         current: _auth.currentUser,

@@ -47,14 +47,19 @@ class ApiClient {
   }) async {
     String? token = _staffToken;
     if (authenticated && token == null) {
-      // Being signed out and being unable to mint a token are different
-      // things, and only the first is a 401. Firebase returns nothing for
-      // either, so ask it which one this is before deciding - a 401 here gets
-      // the person signed out, and doing that because the radio was still
-      // waking up is how a good session gets thrown away.
-      if (!AuthService.isSignedIn) {
+      // Waited for, not merely asked. Firebase restores its session from disk
+      // a moment after start-up, so currentUser is null for the first instant
+      // of every launch - and the first call of every launch lands squarely in
+      // it. Reading that null as "signed out" turned the opening sync into a
+      // 401, which signs the person out and wipes their session: the app threw
+      // people out precisely because it had just been opened.
+      //
+      // The wait happens once; after that this returns straight away.
+      final user = await AuthService.ensureRestored();
+      if (user == null) {
         throw ApiException('You are not signed in. Please sign in again.', 401);
       }
+
       token = await AuthService.idToken(force: retriedAfterRefresh);
       if (token == null) {
         throw ApiException(
