@@ -62,7 +62,10 @@ class ODService extends ChangeNotifier {
     try {
       return await ApiClient.call(action, payload: payload);
     } on ApiException catch (e) {
-      if (e.isAuthError) onSessionExpired?.call();
+      // A refusal ends the session. A bad connection does not - it only means
+      // we could not ask, and signing somebody out because we could not ask is
+      // how a working session gets thrown away on a train.
+      if (e.isRefused) onSessionExpired?.call();
       rethrow;
     }
   }

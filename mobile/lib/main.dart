@@ -197,7 +197,7 @@ class _AppGateState extends State<AppGate> {
     } on ApiException catch (e) {
       // Only a refused session is worth signing out for. A flat battery of a
       // connection should not throw somebody out of the app.
-      if (e.isAuthError) await _signOut();
+      if (e.isRefused) await _signOut();
     }
   }
 
@@ -224,10 +224,18 @@ class _AppGateState extends State<AppGate> {
         );
       }
     } on ApiException catch (e) {
-      // The server refused this account - wrong domain, or disabled. Signing
-      // out is the only way forward, so make that the offered action.
+      if (!mounted) return;
       setState(() => _error = e.message);
-      await AuthService.signOut();
+
+      // Only a refusal means anything about the session: the address is not
+      // allowed, or the account has been removed. A timeout or a dropped
+      // connection says nothing about it, and signing out for those is what
+      // made people sign in again every time they reopened the app on a
+      // waking radio.
+      if (e.isRefused) {
+        await AuthService.signOut();
+        await SessionService.clear();
+      }
     } finally {
       if (mounted) setState(() => _exchanging = false);
     }
@@ -240,6 +248,18 @@ class _AppGateState extends State<AppGate> {
   /// as a Google one the moment its token went missing, and a Google session
   /// is waited for differently at start-up - so the mistake did not show up
   /// until the launch after the one that made it.
+  /// Tries the whole start-up again, session and all.
+  ///
+  /// Offered when the server could not be reached, where the session is still
+  /// good and the only thing wrong was the line.
+  Future<void> _retry() async {
+    setState(() {
+      _error = null;
+      _booting = true;
+    });
+    await _boot();
+  }
+
   Future<void> _adopt(AppUser user, {required SignInRoute route}) async {
     if (route == SignInRoute.staff && user.staffToken == null) {
       // Nothing good comes of storing half a staff session; better to ask them
@@ -297,7 +317,7 @@ class _AppGateState extends State<AppGate> {
     if (_booting || _exchanging) return const _Splash();
 
     if (_error != null && _user == null) {
-      return _ErrorGate(message: _error!, onRetry: () => setState(() => _error = null));
+      return _ErrorGate(message: _error!, onRetry: _retry);
     }
 
     final pending = _needsProfile;

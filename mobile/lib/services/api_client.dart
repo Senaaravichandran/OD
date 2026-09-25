@@ -14,6 +14,15 @@ class ApiException implements Exception {
   bool get isAuthError => statusCode == 401;
   bool get isConflict => statusCode == 409;
 
+  /// The server looked at who this is and said no. The only kind of failure
+  /// worth destroying a session over.
+  bool get isRefused => statusCode == 401 || statusCode == 403;
+
+  /// The request never reached the server, or never came back: a dropped
+  /// connection, a timeout, a radio still waking up. Nothing has been said
+  /// about the session, so nothing should be concluded about it.
+  bool get isOffline => statusCode == null;
+
   @override
   String toString() => message;
 }
@@ -38,9 +47,19 @@ class ApiClient {
   }) async {
     String? token = _staffToken;
     if (authenticated && token == null) {
+      // Being signed out and being unable to mint a token are different
+      // things, and only the first is a 401. Firebase returns nothing for
+      // either, so ask it which one this is before deciding - a 401 here gets
+      // the person signed out, and doing that because the radio was still
+      // waking up is how a good session gets thrown away.
+      if (!AuthService.isSignedIn) {
+        throw ApiException('You are not signed in. Please sign in again.', 401);
+      }
       token = await AuthService.idToken(force: retriedAfterRefresh);
       if (token == null) {
-        throw ApiException('You are not signed in. Please sign in again.', 401);
+        throw ApiException(
+          'Could not reach sign-in services. Check your connection.',
+        );
       }
     }
 
