@@ -37,7 +37,13 @@ class ODService extends ChangeNotifier {
   String? get lastError => _lastError;
   int get unreadCount => _notifications.where((n) => !n.isRead).length;
 
-  void setUser(AppUser? user) {
+  /// Takes on the signed-in person.
+  ///
+  /// [syncNow] is false when the caller knows the network is not ready yet -
+  /// at start-up, a remembered student is shown before Firebase has produced
+  /// its user, and a sync fired then has nothing to authenticate with. The
+  /// caller syncs once it does.
+  void setUser(AppUser? user, {bool syncNow = true}) {
     _user = user;
     ApiClient.setStaffToken(user?.staffToken);
     _requests.clear();
@@ -47,7 +53,7 @@ class ODService extends ChangeNotifier {
     _lastError = null;
     _firstSync = true;
     notifyListeners();
-    if (user != null) refresh();
+    if (user != null && syncNow) refresh();
   }
 
   void updateUser(AppUser user) {
@@ -77,6 +83,11 @@ class ODService extends ChangeNotifier {
   Future<void> refresh() async {
     if (_user == null || _isLoading) return;
     _isLoading = true;
+    // Whatever went wrong last time is about to be answered one way or the
+    // other. Leaving it up means a stale complaint sits over a spinner, which
+    // is how the home screen managed to say "you are not signed in" to
+    // somebody who plainly was.
+    _lastError = null;
     notifyListeners();
     try {
       final res = await _call('SYNC');

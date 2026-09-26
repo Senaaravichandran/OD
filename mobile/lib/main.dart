@@ -162,7 +162,15 @@ class _AppGateState extends State<AppGate> {
     // is the bug that would not die. So open on them, and check behind.
     final student = await SessionService.loadStudent();
     if (student != null) {
-      await _adopt(student, route: SignInRoute.google, remember: false);
+      // Shown straight away, but not synced yet: Firebase has not produced its
+      // user at this point, and a sync now would have nothing to authenticate
+      // with. _confirmStudentSession waits for it and syncs then.
+      await _adopt(
+        student,
+        route: SignInRoute.google,
+        remember: false,
+        syncNow: false,
+      );
       if (mounted) setState(() => _booting = false);
       unawaited(_confirmStudentSession());
       return;
@@ -210,7 +218,14 @@ class _AppGateState extends State<AppGate> {
     } on ApiException catch (e) {
       // A refusal ends it. Anything else was only us failing to ask, and the
       // screen they are on is still theirs.
-      if (e.isRefused) await _signOutBecause(e.message);
+      if (e.isRefused) {
+        await _signOutBecause(e.message);
+      } else {
+        // We never got as far as syncing, so the home screen would sit empty
+        // with nothing to explain it. Let the normal path try and, if it also
+        // fails, say so with a Retry the person can press.
+        unawaited(_od.refresh());
+      }
     }
   }
 
@@ -305,6 +320,7 @@ class _AppGateState extends State<AppGate> {
     AppUser user, {
     required SignInRoute route,
     bool remember = true,
+    bool syncNow = true,
   }) async {
     if (route == SignInRoute.staff && user.staffToken == null) {
       // Nothing good comes of storing half a staff session; better to ask them
@@ -313,7 +329,7 @@ class _AppGateState extends State<AppGate> {
       return;
     }
 
-    _od.setUser(user);
+    _od.setUser(user, syncNow: syncNow);
     if (remember) {
       if (route == SignInRoute.staff) {
         await SessionService.saveStaff(user);
