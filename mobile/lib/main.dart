@@ -170,6 +170,9 @@ class _AppGateState extends State<AppGate> {
         route: SignInRoute.google,
         remember: false,
         syncNow: false,
+        // Firebase has not produced its user yet. Any screen that opens and
+        // asks to refresh will wait rather than fail.
+        sessionReady: false,
       );
       if (mounted) setState(() => _booting = false);
       unawaited(_confirmStudentSession());
@@ -192,6 +195,10 @@ class _AppGateState extends State<AppGate> {
   Future<void> _confirmStudentSession() async {
     // The same wait the API client uses, shared rather than raced.
     final user = await AuthService.ensureRestored();
+    if (user != null) {
+      // Firebase has them. Anything that has been waiting to sync can go.
+      _od.markSessionReady();
+    }
     if (user == null) {
       // Firebase has genuinely lost them - reinstalled, cleared, or the
       // account was removed. Nothing to refresh against.
@@ -321,6 +328,7 @@ class _AppGateState extends State<AppGate> {
     required SignInRoute route,
     bool remember = true,
     bool syncNow = true,
+    bool sessionReady = true,
   }) async {
     if (route == SignInRoute.staff && user.staffToken == null) {
       // Nothing good comes of storing half a staff session; better to ask them
@@ -330,6 +338,10 @@ class _AppGateState extends State<AppGate> {
     }
 
     _od.setUser(user, syncNow: syncNow);
+    // Staff carry their own token, so their session is usable the moment they
+    // are taken on. A student's waits for Firebase, and is opened by whoever
+    // confirmed it.
+    if (sessionReady) _od.markSessionReady();
     if (remember) {
       if (route == SignInRoute.staff) {
         await SessionService.saveStaff(user);

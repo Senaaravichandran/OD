@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../models/class_advisor.dart';
@@ -43,7 +45,34 @@ class ODService extends ChangeNotifier {
   /// at start-up, a remembered student is shown before Firebase has produced
   /// its user, and a sync fired then has nothing to authenticate with. The
   /// caller syncs once it does.
+  /// Resolves once the session can actually be used.
+  ///
+  /// Screens ask for a refresh the moment they appear, which at start-up is
+  /// before Firebase has produced its user. Those calls used to go out with
+  /// nothing to authenticate with, come back "not signed in", and leave that
+  /// on screen over the person's own data. They wait here instead.
+  ///
+  /// There is no security in this gate - the server decides everything. It
+  /// only stops the app asking a question it cannot yet phrase.
+  Completer<void> _sessionReady = Completer<void>();
+
+  Future<void> get sessionReady => _sessionReady.future;
+
+  void markSessionReady() {
+    if (!_sessionReady.isCompleted) _sessionReady.complete();
+  }
+
   void setUser(AppUser? user, {bool syncNow = true}) {
+    // Signing out closes the gate again, so the next person to sign in on this
+    // device waits for their own session rather than walking through on the
+    // last one's.
+    if (user == null) {
+      // Let go of anything already waiting before closing the gate again,
+      // otherwise a refresh raised a moment before the sign-out hangs on a
+      // gate that will never open.
+      if (!_sessionReady.isCompleted) _sessionReady.complete();
+      _sessionReady = Completer<void>();
+    }
     _user = user;
     ApiClient.setStaffToken(user?.staffToken);
     _requests.clear();
@@ -90,6 +119,14 @@ class ODService extends ChangeNotifier {
     _lastError = null;
     notifyListeners();
     try {
+      // The one place every refresh passes, and therefore the only place worth
+      // putting this. A screen opening at start-up waits here for a moment
+      // instead of asking a question it cannot authenticate.
+      await sessionReady.timeout(const Duration(seconds: 20), onTimeout: () {});
+      // They may have been signed out while this was waiting. Asking anyway
+      // would fail, and the failure would land on a screen they have left.
+      if (_user == null) return;
+
       final res = await _call('SYNC');
       final data = res['data'] as Map<String, dynamic>? ?? {};
 
