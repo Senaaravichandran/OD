@@ -1,8 +1,12 @@
-gradle-wrapper.jar
+# The Gradle wrapper belongs in the repository - it is what pins the exact
+# Gradle version the app is known to build with, and without it a fresh clone
+# cannot build at all. Flutter's template ignores it; that is wrong for a
+# project anybody else has to check out.
+# gradle-wrapper.jar
 /.gradle
 /captures/
-/gradlew
-/gradlew.bat
+# /gradlew
+# /gradlew.bat
 /local.properties
 GeneratedPluginRegistrant.java
 .cxx/
