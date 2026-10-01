@@ -37,9 +37,16 @@ function timingSafeEqual(a, b) {
   return crypto.timingSafeEqual(ha, hb);
 }
 
+/// Signs an app session. Staff carry a staff id; a student has none, and is
+/// resolved by their address instead.
 export function signStaffToken({ staffId, email, role }) {
   const body = Buffer.from(
-    JSON.stringify({ s: staffId, e: email, r: role, x: Date.now() + STAFF_TOKEN_TTL_MS })
+    JSON.stringify({
+      s: staffId ?? null,
+      e: email,
+      r: role,
+      x: Date.now() + STAFF_TOKEN_TTL_MS,
+    })
   ).toString('base64url');
   const sig = crypto.createHmac('sha256', signingSecret()).update(body).digest('base64url');
   return `staff.${body}.${sig}`;
@@ -140,11 +147,37 @@ export async function identify(req) {
   const token = bearer(req);
   if (!token) throw new HttpError(401, 'Please sign in first.');
 
-  // Staff password session: re-read the account each time so a removal or a
-  // role change takes effect immediately rather than living in the token.
+  // An app session, held by the app itself. Whoever it belongs to, the account
+  // is re-read on every call, so a removal or a role change takes effect at
+  // once rather than living on inside the token.
   if (token.startsWith('staff.')) {
     const data = readStaffToken(token);
     if (!data) throw new HttpError(401, 'Your session expired. Please sign in again.');
+
+    if (data.r === 'STUDENT') {
+      const row = await one(
+        `select u.id as user_id, u.display_name, u.is_active,
+                s.id as student_id, s.name, s.profile_completed
+           from users u
+           left join students s on s.user_id = u.id
+          where u.email = $1 and u.role = 'STUDENT'`,
+        [data.e]
+      );
+      if (!row) throw new HttpError(401, 'This account no longer exists.');
+      if (row.is_active === false) {
+        throw new HttpError(403, 'This account has been removed by the department.');
+      }
+      return {
+        userId: row.user_id,
+        studentId: row.student_id,
+        email: data.e,
+        role: 'STUDENT',
+        name: row.name || row.display_name,
+        profileCompleted: row.profile_completed === true,
+        renewToken: staffTokenNeedsRenewal(token),
+      };
+    }
+
     const staff = await one(
       `select s.id as staff_id, s.name, s.is_hod, s.is_active, u.id as user_id
          from staff s join users u on u.id = s.user_id
@@ -172,8 +205,20 @@ export async function identify(req) {
     decoded = await verifyIdToken(token);
   } catch (err) {
     const code = err?.errorInfo?.code || err?.code || '';
-    if (code.includes('id-token-expired')) throw new HttpError(401, 'Your session expired. Please sign in again.');
-    if (code.includes('id-token-revoked')) throw new HttpError(401, 'You were signed out. Please sign in again.');
+    if (code.includes('id-token-expired')) {
+      throw new HttpError(401, 'Your session expired. Please sign in again.');
+    }
+    if (code.includes('id-token-revoked')) {
+      throw new HttpError(401, 'You were signed out. Please sign in again.');
+    }
+
+    // Our trouble, not theirs - Google's signing keys were out of reach. A 401
+    // here tells the app the session was refused, and it signs the person out
+    // over something that was never about them. 503 says "ask again".
+    if (err?.retryable) {
+      throw new HttpError(503, 'Sign-in checks are briefly unavailable. Please try again.');
+    }
+
     throw new HttpError(401, 'Your sign-in could not be verified. Please sign in again.');
   }
 
@@ -199,29 +244,17 @@ export async function identify(req) {
   }
 
   if (staff) {
-    await query(
-      `update users set firebase_uid = coalesce(firebase_uid, $1),
-                        photo_url = coalesce($2, photo_url)
-        where id = $3`,
-      [decoded.uid, decoded.picture, staff.user_id]
+    // Staff and the HOD sign in with their department password, not with
+    // Google. Enforced here rather than only in the app, so it holds for every
+    // client and every version of them.
+    throw new HttpError(
+      403,
+      'Class advisors and the HOD sign in with their department email and '
+      + 'password, not with Google.'
     );
-    await noteSignIn({
-      userId: staff.user_id,
-      email,
-      role: staff.is_hod ? 'HOD' : 'ADVISOR',
-      name: staff.name,
-      method: 'Google',
-    });
-    return {
-      userId: staff.user_id,
-      staffId: staff.staff_id,
-      email,
-      role: staff.is_hod ? 'HOD' : 'ADVISOR',
-      name: staff.name,
-    };
   }
 
-  // Everyone else is a student. Students must come through Google.
+  // Everyone reaching here is a student, and students come through Google.
   if (decoded.signInProvider && decoded.signInProvider !== 'google.com') {
     throw new HttpError(403, 'Students must sign in with Google.');
   }
@@ -262,6 +295,10 @@ export async function identify(req) {
     userId: user.id,
     email,
     role: 'STUDENT',
+    // Marked so the reply hands back an app token: this is the one call a
+    // student makes with a Firebase token, and from here on they carry
+    // their own session like everybody else.
+    viaFirebase: true,
     name: student?.name || user.display_name,
     studentId: student?.id || null,
     profileCompleted: Boolean(student?.profile_completed),

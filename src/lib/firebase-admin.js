@@ -41,16 +41,44 @@ function projectId() {
 // ID token verification
 // ---------------------------------------------------------------------------
 
+/// A failure that is ours, not the caller's.
+///
+/// Marked so it can be answered with a 503 rather than a 401. The difference
+/// matters more than it looks: the app signs somebody out on a 401, so
+/// reporting our own trouble that way throws people out of a session that was
+/// never in question.
+function transient(message) {
+  const err = new Error(message);
+  err.retryable = true;
+  return err;
+}
+
 // Google rotates these certificates roughly daily and tells us when to expire
 // the cache, so honour that rather than fetching on every request.
 let certCache = { certs: null, expiresAt: 0 };
 
-async function googleCerts() {
-  if (certCache.certs && Date.now() < certCache.expiresAt) return certCache.certs;
+async function googleCerts({ force = false } = {}) {
+  if (!force && certCache.certs && Date.now() < certCache.expiresAt) {
+    return certCache.certs;
+  }
 
-  const res = await fetch(CERT_URL);
-  if (!res.ok) throw new Error(`Could not fetch Google signing keys (${res.status}).`);
-  const certs = await res.json();
+  let res;
+  try {
+    res = await fetch(CERT_URL);
+  } catch (err) {
+    // Could not reach Google at all. Says nothing about the token.
+    throw transient(`Could not reach Google's signing keys: ${err.message}`);
+  }
+  if (!res.ok) {
+    throw transient(`Could not fetch Google signing keys (${res.status}).`);
+  }
+
+  let certs;
+  try {
+    certs = await res.json();
+  } catch {
+    throw transient('Google returned signing keys we could not read.');
+  }
 
   const cacheControl = res.headers.get('cache-control') || '';
   const maxAge = Number(/max-age=(\d+)/.exec(cacheControl)?.[1] || 3600);
@@ -84,8 +112,16 @@ export async function verifyIdToken(idToken) {
   if (header.alg !== 'RS256') throw new Error('Unexpected token algorithm.');
   if (!header.kid) throw new Error('Token has no key id.');
 
-  const certs = await googleCerts();
-  const cert = certs[header.kid];
+  // Google publishes new signing keys shortly before it starts using them, so
+  // a key id we have not seen usually means our cached copy is simply older
+  // than the token. Fetching again costs one request a day and turns the
+  // rotation from an outage into nothing at all.
+  let certs = await googleCerts();
+  let cert = certs[header.kid];
+  if (!cert) {
+    certs = await googleCerts({ force: true });
+    cert = certs[header.kid];
+  }
   if (!cert) throw new Error('Token was signed with an unknown key.');
 
   const ok = crypto

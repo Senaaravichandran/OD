@@ -29,6 +29,17 @@ const cors = {
 
 const json = (body, status = 200) => NextResponse.json(body, { status, headers: cors });
 
+/// Hands back an app session token when the caller needs one.
+///
+/// Two moments call for it. Somebody who has just proved themselves through
+/// Google is given a token, so every later call is the app's own session -
+/// Firebase is asked once, at sign-in, and never consulted again. And a token
+/// that is getting on is replaced, so anyone still using the app is never
+/// asked for a password a second time.
+const withSession = (auth, body) => (auth.viaFirebase || auth.renewToken
+  ? { ...body, token: signStaffToken(auth) }
+  : body);
+
 // ---------------------------------------------------------------------------
 // Notifications
 // ---------------------------------------------------------------------------
@@ -1223,14 +1234,8 @@ export async function POST(req) {
     const auth = await identify(req);
 
     switch (action) {
-      case 'SESSION': {
-        const res = await session(auth);
-        // A staff session slides: whenever it is getting on, hand back a
-        // fresh token. The app saves it, so someone who keeps using the app
-        // never has to type the password again.
-        return json(auth.renewToken ? { ...res, token: signStaffToken(auth) } : res);
-      }
-      case 'REGISTER':         return json(await registerStudent(auth, p));
+      case 'SESSION':          return json(withSession(auth, await session(auth)));
+      case 'REGISTER':         return json(withSession(auth, await registerStudent(auth, p)));
       case 'CHANGE_CLASS':     return json(await changeClass(auth, p));
       case 'SYNC':             return json(await sync(auth, p));
       case 'CREATE_OD':        return json(await createOd(auth, p));
