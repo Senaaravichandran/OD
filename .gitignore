@@ -55,3 +55,11 @@ supabase/.temp/
 # Firebase Admin service account - full project access, never commit
 firebase-admin*.json
 *-firebase-adminsdk-*.json
+
+# The Android app is published on GitHub Releases, not through the site.
+# A 60 MB binary in public/ is copied into every single deployment, which is
+# how this project reached six gigabytes of deployment storage. next.config.mjs
+# redirects /downloads/smvec-od.apk to the release, so the address on the
+# posters still works.
+public/downloads/*.apk
+public/*.apk
