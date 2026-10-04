@@ -51,12 +51,17 @@ comment on column od_team_members.contribution is
 -- ---------------------------------------------------------------------------
 -- The HOD's password
 -- ---------------------------------------------------------------------------
--- bcrypt cost 12 of the new password. The plaintext is not in this file, in
--- the repository, or anywhere the application can read it.
-
-update staff
-   set password_hash = '$2b$12$3NivDq9D136Zw385Uwz2..YTlpdwiVIyRP90/8fmq86DE25oE9asW'
- where email = 'hodit@smvec.ac.in';
+-- Deliberately not here any more.
+--
+-- This migration once carried the bcrypt digest of the HOD's password. That
+-- was tolerable while the repository was private and stopped being so the
+-- moment it went public: a digest plus a guessable scheme is an offline
+-- cracking exercise, not a secret. The password has been rotated, and
+-- passwords are now set through the app - the HOD's own "Change class
+-- advisor" screen - so no digest needs to live in version control again.
+--
+-- Nothing replaces it here on purpose. A fresh database starts with no HOD
+-- password and one is set from the app.
 
 -- ---------------------------------------------------------------------------
 -- The report view carries the new columns
